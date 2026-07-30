@@ -83,14 +83,17 @@ DualSense firmware reports battery in **11 coarse steps** (0–10). Percentages 
 - **Second launch does nothing** — only one instance is allowed; the second process exits after logging.
 - **Exe icon looks stale in Explorer** — rebuild release, then refresh the folder or restart Explorer (Windows caches icons).
 - **Controller not listed** — wait a few seconds after power-on (presence is scanned every 3s); check the log if open/read fails.
+- **Lightbar / identify does nothing without Steam** — fixed in 0.1.1 (lightbar setup flags). If it still fails, check the log for HID write errors.
 
 ## Releases
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

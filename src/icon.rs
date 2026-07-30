@@ -1,4 +1,4 @@
-use crate::battery::{ControllerStatus, PowerState};
+use crate::battery::ControllerStatus;
 use tray_icon::Icon;
 
 const SIZE: u32 = 32;
@@ -6,131 +6,99 @@ const SIZE: u32 = 32;
 type Rgba = [u8; 4];
 
 const TRANSPARENT: Rgba = [0, 0, 0, 0];
-const OUTLINE: Rgba = [240, 240, 240, 255];
-const EMPTY_FILL: Rgba = [55, 55, 55, 220];
-const GREEN: Rgba = [76, 185, 68, 255];
-const YELLOW: Rgba = [230, 180, 40, 255];
-const RED: Rgba = [220, 70, 60, 255];
-const BLUE: Rgba = [70, 150, 255, 255];
-const GRAY: Rgba = [140, 140, 140, 255];
-const BOLT: Rgba = [255, 220, 60, 255];
+const BODY: Rgba = [235, 235, 240, 255];
+const BODY_DIM: Rgba = [120, 120, 128, 255];
+const SHADE: Rgba = [40, 40, 48, 255];
+const SHADE_DIM: Rgba = [70, 70, 78, 255];
+const ACCENT: Rgba = [0, 90, 255, 255]; // DualSense-ish lightbar hint
+const ACCENT_DIM: Rgba = [80, 80, 90, 255];
 
 pub fn icon_for_controllers(controllers: &[ControllerStatus]) -> Icon {
-    match representative(controllers) {
-        Some(c) => battery_icon(c.percent, c.state),
-        None => disconnected_icon(),
-    }
+    let connected = !controllers.is_empty();
+    controller_icon(connected)
 }
 
 pub fn tooltip_for_controllers(controllers: &[ControllerStatus]) -> String {
-    if controllers.is_empty() {
-        return "No DualSense".into();
-    }
-
-    let lowest = controllers.iter().map(|c| c.percent).min().unwrap_or(0);
     let count = controllers.len();
-    let noun = if count == 1 {
-        "controller"
-    } else {
-        "controllers"
-    };
-    format!("Lowest {lowest}% · {count} {noun}")
+    match count {
+        0 => "No controllers connected".into(),
+        1 => "1 controller connected".into(),
+        n => format!("{n} controllers connected"),
+    }
 }
 
-fn representative(controllers: &[ControllerStatus]) -> Option<&ControllerStatus> {
-    // Prefer the lowest battery so the tray reflects the controller that needs attention.
-    controllers.iter().min_by_key(|c| c.percent)
-}
-
-fn battery_icon(percent: u8, state: PowerState) -> Icon {
+fn controller_icon(connected: bool) -> Icon {
     let mut px = vec![TRANSPARENT; (SIZE * SIZE) as usize];
-    let fill = fill_color(percent, state);
-    draw_battery(&mut px, percent, fill, state.is_charging());
+    let body = if connected { BODY } else { BODY_DIM };
+    let shade = if connected { SHADE } else { SHADE_DIM };
+    let accent = if connected { ACCENT } else { ACCENT_DIM };
+    draw_dualsense(&mut px, body, shade, accent);
     rgba_icon(px)
 }
 
-fn disconnected_icon() -> Icon {
-    let mut px = vec![TRANSPARENT; (SIZE * SIZE) as usize];
-    draw_battery(&mut px, 0, GRAY, false);
-    // Small X to show disconnected.
-    for i in 0..8 {
-        put(&mut px, 12 + i, 12 + i, RED);
-        put(&mut px, 19 - i, 12 + i, RED);
-    }
-    rgba_icon(px)
+/// Compact DualSense silhouette for a 32×32 tray icon.
+fn draw_dualsense(px: &mut [Rgba], body: Rgba, shade: Rgba, accent: Rgba) {
+    // Main body (center rectangle with soft corners).
+    fill_rect(px, 8, 10, 23, 20, body);
+
+    // Left grip (downward lobe).
+    fill_rect(px, 3, 12, 9, 22, body);
+    fill_rect(px, 2, 16, 6, 24, body);
+    put(px, 3, 25, body);
+    put(px, 4, 25, body);
+
+    // Right grip (downward lobe).
+    fill_rect(px, 22, 12, 28, 22, body);
+    fill_rect(px, 25, 16, 29, 24, body);
+    put(px, 27, 25, body);
+    put(px, 28, 25, body);
+
+    // Upper shoulders / triggers silhouette.
+    fill_rect(px, 6, 8, 12, 10, body);
+    fill_rect(px, 19, 8, 25, 10, body);
+
+    // Touchpad / center plate.
+    fill_rect(px, 12, 11, 19, 15, shade);
+
+    // Lightbar strip under the touchpad.
+    fill_rect(px, 12, 16, 19, 17, accent);
+
+    // Left stick.
+    fill_circle(px, 9, 18, 2, shade);
+    // Right stick.
+    fill_circle(px, 22, 18, 2, shade);
+
+    // D-pad hint (left).
+    put(px, 7, 14, shade);
+    put(px, 6, 15, shade);
+    put(px, 7, 15, shade);
+    put(px, 8, 15, shade);
+    put(px, 7, 16, shade);
+
+    // Face-button hints (right).
+    put(px, 23, 13, shade);
+    put(px, 22, 14, shade);
+    put(px, 24, 14, shade);
+    put(px, 23, 15, shade);
 }
 
-fn fill_color(percent: u8, state: PowerState) -> Rgba {
-    if state.is_charging() {
-        return BLUE;
-    }
-    match percent {
-        0..=19 => RED,
-        20..=49 => YELLOW,
-        _ => GREEN,
-    }
-}
-
-fn draw_battery(px: &mut [Rgba], percent: u8, fill: Rgba, charging: bool) {
-    // Body outline: x=4..25, y=9..22
-    for x in 4..=25 {
-        put(px, x, 9, OUTLINE);
-        put(px, x, 22, OUTLINE);
-    }
-    for y in 9..=22 {
-        put(px, 4, y, OUTLINE);
-        put(px, 25, y, OUTLINE);
-    }
-    // Terminal nub
-    for x in 26..=28 {
-        for y in 12..=19 {
-            put(px, x, y, OUTLINE);
+fn fill_rect(px: &mut [Rgba], x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba) {
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            put(px, x, y, color);
         }
-    }
-
-    // Inner empty area
-    for x in 6..=23 {
-        for y in 11..=20 {
-            put(px, x, y, EMPTY_FILL);
-        }
-    }
-
-    // Charge fill (left → right)
-    let inner_w = 18i32; // x=6..23 inclusive = 18
-    let filled = ((i32::from(percent) * inner_w) / 100).clamp(0, inner_w);
-    for i in 0..filled {
-        for y in 11..=20 {
-            put(px, 6 + i, y, fill);
-        }
-    }
-
-    if charging {
-        draw_bolt(px);
     }
 }
 
-fn draw_bolt(px: &mut [Rgba]) {
-    // Simple lightning bolt centered in the battery body.
-    let points = [
-        (16, 11),
-        (15, 12),
-        (14, 13),
-        (13, 14),
-        (15, 14),
-        (14, 15),
-        (13, 16),
-        (12, 17),
-        (14, 17),
-        (13, 18),
-        (12, 19),
-        (15, 15),
-        (16, 14),
-        (17, 13),
-        (16, 16),
-        (15, 17),
-    ];
-    for (x, y) in points {
-        put(px, x, y, BOLT);
+fn fill_circle(px: &mut [Rgba], cx: i32, cy: i32, radius: i32, color: Rgba) {
+    for y in (cy - radius)..=(cy + radius) {
+        for x in (cx - radius)..=(cx + radius) {
+            let dx = x - cx;
+            let dy = y - cy;
+            if dx * dx + dy * dy <= radius * radius {
+                put(px, x, y, color);
+            }
+        }
     }
 }
 

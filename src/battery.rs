@@ -36,6 +36,12 @@ const MAX_POWER_LEVEL: u8 = 0x0A;
 pub const IDENTIFY_FLASH_MS: u64 = 150;
 pub const IDENTIFY_FLASH_COUNT: u32 = 5;
 
+/// Lowest DualSense reporting bucket (mid-point 5% ≈ 0–9%).
+pub const LOW_BATTERY_PERCENT: u8 = 5;
+pub const LOW_BATTERY_ORANGE: (u8, u8, u8) = (255, 100, 0);
+pub const LOW_BATTERY_PULSE_ON_MS: u64 = 400;
+pub const LOW_BATTERY_PULSE_GAP_MS: u64 = 1600;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerState {
     Discharging,
@@ -71,14 +77,6 @@ impl PowerState {
             Self::Unknown => "unknown",
         }
     }
-
-    pub fn is_charging(self) -> bool {
-        matches!(self, Self::Charging | Self::Complete)
-    }
-
-    fn is_complete(self) -> bool {
-        matches!(self, Self::Complete)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +98,10 @@ impl ControllerStatus {
             self.percent,
             self.state.as_str()
         )
+    }
+
+    pub fn is_low_battery(&self) -> bool {
+        self.percent <= LOW_BATTERY_PERCENT
     }
 }
 
@@ -300,14 +302,9 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
         }
 
         let power = buf[power_offset];
-        let mut level = power & POWER_LEVEL_MASK;
+        let level = (power & POWER_LEVEL_MASK).min(MAX_POWER_LEVEL);
         let state = PowerState::from_nibble(power >> POWER_STATE_SHIFT);
-
-        if state.is_complete() {
-            level = MAX_POWER_LEVEL;
-        }
-
-        let percent = ((u16::from(level) * 100) / u16::from(MAX_POWER_LEVEL)).min(100) as u8;
+        let percent = percent_from_level(level, state);
 
         return Ok(BatteryStatus {
             percent,
@@ -320,6 +317,25 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
     Err(hidapi::HidError::HidApiError {
         message: "timed out waiting for a DualSense input report with battery data".into(),
     })
+}
+
+/// DualSense reports battery in 11 coarse steps (0..=10).
+/// Linux maps each step to the mid-point of its 10% bucket:
+/// 0 → 0–9% (5%), 1 → 10–19% (15%), …, 9 → 90–99% (95%), 10/full → 100%.
+fn percent_from_level(level: u8, state: PowerState) -> u8 {
+    match state {
+        PowerState::Complete => 100,
+        PowerState::AbnormalVoltage
+        | PowerState::AbnormalTemperature
+        | PowerState::ChargingError => 0,
+        PowerState::Discharging | PowerState::Charging | PowerState::Unknown => {
+            if level >= MAX_POWER_LEVEL {
+                100
+            } else {
+                (u16::from(level) * 10 + 5).min(100) as u8
+            }
+        }
+    }
 }
 
 fn request_full_bt_report(device: &HidDevice) -> Result<(), hidapi::HidError> {

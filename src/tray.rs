@@ -1,7 +1,9 @@
-use crate::battery::{self, ControllerStatus};
+use crate::battery::{
+    self, ControllerStatus, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
+};
 use crate::icon;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -26,6 +28,8 @@ struct TrayApp {
     controllers: Vec<ControllerStatus>,
     /// True while an identify flash sequence is running (skip lightbar updates).
     identifying: Arc<AtomicBool>,
+    /// Controllers currently in the critical low-battery bucket (serial, percent).
+    low_battery: Arc<Mutex<Vec<(String, u8)>>>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,17 +53,74 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let identifying = Arc::new(AtomicBool::new(false));
+    let low_battery = Arc::new(Mutex::new(Vec::new()));
+    start_low_battery_pulse_thread(Arc::clone(&identifying), Arc::clone(&low_battery));
+
     let mut app = TrayApp {
         tray_icon: None,
         controllers: Vec::new(),
-        identifying: Arc::new(AtomicBool::new(false)),
+        identifying,
+        low_battery,
     };
 
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
+fn start_low_battery_pulse_thread(
+    identifying: Arc<AtomicBool>,
+    low_battery: Arc<Mutex<Vec<(String, u8)>>>,
+) {
+    thread::spawn(move || {
+        let on = Duration::from_millis(LOW_BATTERY_PULSE_ON_MS);
+        let gap = Duration::from_millis(LOW_BATTERY_PULSE_GAP_MS);
+        let (or, og, ob) = LOW_BATTERY_ORANGE;
+
+        loop {
+            thread::sleep(gap);
+
+            if identifying.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            let targets = low_battery
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+
+            for (serial, percent) in targets {
+                if identifying.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                let _ = battery::apply_lightbar_rgb(&serial, or, og, ob);
+                thread::sleep(on);
+
+                if identifying.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                let (r, g, b) = battery::color_for_battery_percent(percent);
+                let _ = battery::apply_lightbar_rgb(&serial, r, g, b);
+            }
+        }
+    });
+}
+
 impl TrayApp {
+    fn sync_low_battery(&self) {
+        let list: Vec<(String, u8)> = self
+            .controllers
+            .iter()
+            .filter(|c| c.is_low_battery())
+            .map(|c| (c.serial.clone(), c.percent))
+            .collect();
+        if let Ok(mut guard) = self.low_battery.lock() {
+            *guard = list;
+        }
+    }
+
     fn refresh(&mut self) {
         if self.identifying.load(Ordering::SeqCst) {
             return;
@@ -69,6 +130,7 @@ impl TrayApp {
             Ok(controllers) => self.controllers = controllers,
             Err(err) => eprintln!("warning: refresh failed: {err}"),
         }
+        self.sync_low_battery();
         self.apply_tray();
     }
 
@@ -88,6 +150,7 @@ impl TrayApp {
 
     fn create_tray(&mut self) {
         self.controllers = battery::poll_controllers().unwrap_or_default();
+        self.sync_low_battery();
 
         let icon = icon::icon_for_controllers(&self.controllers);
         let tooltip = icon::tooltip_for_controllers(&self.controllers);

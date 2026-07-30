@@ -1,7 +1,10 @@
-use crate::battery::{
-    self, ControllerStatus, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
-};
+use crate::app_log;
+use crate::battery::{self, ControllerStatus};
+use crate::color::color_for_battery_percent;
 use crate::icon;
+use crate::lightbar::{
+    self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,7 +29,7 @@ enum UserEvent {
 struct TrayApp {
     tray_icon: Option<TrayIcon>,
     controllers: Vec<ControllerStatus>,
-    /// True while an identify flash sequence is running (skip lightbar updates).
+    /// True while an identify flash sequence is running (pulse should yield).
     identifying: Arc<AtomicBool>,
     /// Controllers currently in the critical low-battery bucket (serial, percent).
     low_battery: Arc<Mutex<Vec<(String, u8)>>>,
@@ -40,7 +43,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    // Keep the receiver alive so tray events aren't dropped unused.
     let _tray_events = TrayIconEvent::receiver();
 
     let proxy = event_loop.create_proxy();
@@ -75,7 +77,6 @@ fn start_low_battery_pulse_thread(
     thread::spawn(move || {
         let on = Duration::from_millis(LOW_BATTERY_PULSE_ON_MS);
         let gap = Duration::from_millis(LOW_BATTERY_PULSE_GAP_MS);
-        let (or, og, ob) = LOW_BATTERY_ORANGE;
 
         loop {
             thread::sleep(gap);
@@ -94,15 +95,19 @@ fn start_low_battery_pulse_thread(
                     break;
                 }
 
-                let _ = battery::apply_lightbar_rgb(&serial, or, og, ob);
+                if let Err(err) = lightbar::apply_lightbar_rgb(&serial, LOW_BATTERY_ORANGE) {
+                    app_log::warn(format!("low-battery pulse failed for {serial}: {err}"));
+                }
                 thread::sleep(on);
 
                 if identifying.load(Ordering::SeqCst) {
                     break;
                 }
 
-                let (r, g, b) = battery::color_for_battery_percent(percent);
-                let _ = battery::apply_lightbar_rgb(&serial, r, g, b);
+                let color = color_for_battery_percent(percent);
+                if let Err(err) = lightbar::apply_lightbar_rgb(&serial, color) {
+                    app_log::warn(format!("low-battery restore failed for {serial}: {err}"));
+                }
             }
         }
     });
@@ -128,7 +133,7 @@ impl TrayApp {
 
         match battery::poll_controllers() {
             Ok(controllers) => self.controllers = controllers,
-            Err(err) => eprintln!("warning: refresh failed: {err}"),
+            Err(err) => app_log::warn(format!("refresh failed: {err}")),
         }
         self.sync_low_battery();
         self.apply_tray();
@@ -163,7 +168,7 @@ impl TrayApp {
             .build()
         {
             Ok(tray) => self.tray_icon = Some(tray),
-            Err(err) => eprintln!("error: failed to create tray icon: {err}"),
+            Err(err) => app_log::error(format!("failed to create tray icon: {err}")),
         }
     }
 
@@ -185,8 +190,8 @@ impl TrayApp {
         let identifying = Arc::clone(&self.identifying);
 
         thread::spawn(move || {
-            if let Err(err) = battery::identify_controller(&serial, percent) {
-                eprintln!("warning: identify failed for {serial}: {err}");
+            if let Err(err) = lightbar::identify_controller(&serial, percent) {
+                app_log::warn(format!("identify failed for {serial}: {err}"));
             }
             identifying.store(false, Ordering::SeqCst);
         });

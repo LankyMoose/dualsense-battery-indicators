@@ -1,3 +1,8 @@
+//! DualSense discovery and battery reading.
+
+use crate::app_log;
+use crate::color::color_for_battery_percent;
+use crate::lightbar::{self, set_lightbar_on_device, with_lightbar_lock};
 use hidapi::{BusType, DeviceInfo, HidApi, HidDevice};
 use std::thread;
 use std::time::Duration;
@@ -21,26 +26,12 @@ const USB_REPORT_ID: u8 = 0x01;
 const CALIBRATION_FEATURE_REPORT: u8 = 0x05;
 const CALIBRATION_FEATURE_SIZE: usize = 41;
 
-const OUTPUT_REPORT_USB_ID: u8 = 0x02;
-const OUTPUT_REPORT_USB_SIZE: usize = 63;
-const OUTPUT_REPORT_BT_ID: u8 = 0x31;
-const OUTPUT_REPORT_BT_SIZE: usize = 78;
-const OUTPUT_REPORT_BT_TAG: u8 = 0x10;
-const OUTPUT_CRC32_SEED: u8 = 0xA2;
-const OUTPUT_VALID_FLAG1_LIGHTBAR: u8 = 1 << 2;
-
 const POWER_LEVEL_MASK: u8 = 0x0F;
 const POWER_STATE_SHIFT: u8 = 4;
 const MAX_POWER_LEVEL: u8 = 0x0A;
 
-pub const IDENTIFY_FLASH_MS: u64 = 150;
-pub const IDENTIFY_FLASH_COUNT: u32 = 5;
-
 /// Lowest DualSense reporting bucket (mid-point 5% ≈ 0–9%).
 pub const LOW_BATTERY_PERCENT: u8 = 5;
-pub const LOW_BATTERY_ORANGE: (u8, u8, u8) = (255, 100, 0);
-pub const LOW_BATTERY_PULSE_ON_MS: u64 = 400;
-pub const LOW_BATTERY_PULSE_GAP_MS: u64 = 1600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerState {
@@ -54,7 +45,7 @@ pub enum PowerState {
 }
 
 impl PowerState {
-    fn from_nibble(value: u8) -> Self {
+    pub fn from_nibble(value: u8) -> Self {
         match value {
             0x00 => Self::Discharging,
             0x01 => Self::Charging,
@@ -77,6 +68,10 @@ impl PowerState {
             Self::Unknown => "unknown",
         }
     }
+
+    pub fn is_discharging(self) -> bool {
+        matches!(self, Self::Discharging)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,17 +86,28 @@ pub struct ControllerStatus {
 
 impl ControllerStatus {
     pub fn menu_label(&self) -> String {
-        format!(
-            "{} ({})  {}% — {}",
-            self.product,
-            self.connection,
-            self.percent,
-            self.state.as_str()
-        )
+        if self.is_low_battery() {
+            format!(
+                "LOW {}% — {} ({}) — {}",
+                self.percent,
+                self.product,
+                self.connection,
+                self.state.as_str()
+            )
+        } else {
+            format!(
+                "{} ({})  {}% — {}",
+                self.product,
+                self.connection,
+                self.percent,
+                self.state.as_str()
+            )
+        }
     }
 
+    /// Critical low bucket while discharging (drives orange pulse).
     pub fn is_low_battery(&self) -> bool {
-        self.percent <= LOW_BATTERY_PERCENT
+        self.percent <= LOW_BATTERY_PERCENT && self.state.is_discharging()
     }
 }
 
@@ -111,36 +117,6 @@ struct BatteryStatus {
     state: PowerState,
     connection: &'static str,
     is_bluetooth: bool,
-}
-
-/// Map battery percent to a blue → purple → red hue.
-/// 100% → hue 240° (blue), 0% → hue 360° (red), passing through purple.
-pub fn color_for_battery_percent(percent: u8) -> (u8, u8, u8) {
-    let t = (100u8.saturating_sub(percent)) as f32 / 100.0;
-    let hue = 240.0 + t * 120.0; // 240..360
-    hsv_to_rgb(hue, 1.0, 1.0)
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let h_prime = (h % 360.0) / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    let (r1, g1, b1) = match h_prime as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    (
-        ((r1 + m) * 255.0).round() as u8,
-        ((g1 + m) * 255.0).round() as u8,
-        ((b1 + m) * 255.0).round() as u8,
-    )
 }
 
 pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
@@ -166,10 +142,14 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
 
         match info.open_device(&api).and_then(|device| {
             let battery = read_battery(&device)?;
-            let (r, g, b) = color_for_battery_percent(battery.percent);
-            if let Err(err) = set_lightbar_rgb(&device, r, g, b, battery.is_bluetooth) {
-                eprintln!("warning: failed to set lightbar on {product}: {err}");
-            }
+            let color = color_for_battery_percent(battery.percent);
+            with_lightbar_lock(|| {
+                if let Err(err) =
+                    set_lightbar_on_device(&device, color, battery.is_bluetooth)
+                {
+                    lightbar::warn_lightbar(product, err);
+                }
+            });
             Ok(battery)
         }) {
             Ok(battery) => statuses.push(ControllerStatus {
@@ -181,7 +161,7 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
                 state: battery.state,
             }),
             Err(err) => {
-                eprintln!("warning: failed to read {product} ({serial}): {err}");
+                app_log::warn(format!("failed to read {product} ({serial}): {err}"));
             }
         }
     }
@@ -194,46 +174,7 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
     Ok(statuses)
 }
 
-pub fn apply_lightbar_rgb(serial: &str, r: u8, g: u8, b: u8) -> Result<(), String> {
-    let api = HidApi::new().map_err(|e| e.to_string())?;
-    let info = api
-        .device_list()
-        .find(|d| {
-            is_dualsense_gamepad(d)
-                && d.serial_number()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("unknown")
-                    == serial
-        })
-        .ok_or_else(|| format!("controller {serial} not found"))?;
-
-    let device = info.open_device(&api).map_err(|e| e.to_string())?;
-    let is_bluetooth = matches!(
-        device
-            .get_device_info()
-            .map_err(|e| e.to_string())?
-            .bus_type(),
-        BusType::Bluetooth
-    );
-    set_lightbar_rgb(&device, r, g, b, is_bluetooth).map_err(|e| e.to_string())
-}
-
-/// Flash white, then restore battery color, five times.
-pub fn identify_controller(serial: &str, percent: u8) -> Result<(), String> {
-    let normal = color_for_battery_percent(percent);
-    let flash_for = Duration::from_millis(IDENTIFY_FLASH_MS);
-
-    for _ in 0..IDENTIFY_FLASH_COUNT {
-        apply_lightbar_rgb(serial, 255, 255, 255)?;
-        thread::sleep(flash_for);
-        apply_lightbar_rgb(serial, normal.0, normal.1, normal.2)?;
-        thread::sleep(flash_for);
-    }
-
-    Ok(())
-}
-
-fn is_dualsense_gamepad(d: &DeviceInfo) -> bool {
+pub(crate) fn is_dualsense_gamepad(d: &DeviceInfo) -> bool {
     d.vendor_id() == SONY_VENDOR_ID
         && matches!(
             d.product_id(),
@@ -322,7 +263,7 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
 /// DualSense reports battery in 11 coarse steps (0..=10).
 /// Linux maps each step to the mid-point of its 10% bucket:
 /// 0 → 0–9% (5%), 1 → 10–19% (15%), …, 9 → 90–99% (95%), 10/full → 100%.
-fn percent_from_level(level: u8, state: PowerState) -> u8 {
+pub fn percent_from_level(level: u8, state: PowerState) -> u8 {
     match state {
         PowerState::Complete => 100,
         PowerState::AbnormalVoltage
@@ -345,40 +286,37 @@ fn request_full_bt_report(device: &HidDevice) -> Result<(), hidapi::HidError> {
     Ok(())
 }
 
-fn set_lightbar_rgb(
-    device: &HidDevice,
-    r: u8,
-    g: u8,
-    b: u8,
-    is_bluetooth: bool,
-) -> Result<(), hidapi::HidError> {
-    if is_bluetooth {
-        let mut report = [0u8; OUTPUT_REPORT_BT_SIZE];
-        report[0] = OUTPUT_REPORT_BT_ID;
-        report[1] = 0x10;
-        report[2] = OUTPUT_REPORT_BT_TAG;
-        report[3 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
-        report[3 + 44] = r;
-        report[3 + 45] = g;
-        report[3 + 46] = b;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let crc = {
-            let mut data = Vec::with_capacity(OUTPUT_REPORT_BT_SIZE - 3);
-            data.push(OUTPUT_CRC32_SEED);
-            data.extend_from_slice(&report[..OUTPUT_REPORT_BT_SIZE - 4]);
-            crc32fast::hash(&data)
-        };
-        report[OUTPUT_REPORT_BT_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
-        device.write(&report)?;
-    } else {
-        let mut report = [0u8; OUTPUT_REPORT_USB_SIZE];
-        report[0] = OUTPUT_REPORT_USB_ID;
-        report[1 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
-        report[1 + 44] = r;
-        report[1 + 45] = g;
-        report[1 + 46] = b;
-        device.write(&report)?;
+    #[test]
+    fn percent_buckets_match_linux_midpoints() {
+        assert_eq!(percent_from_level(0, PowerState::Discharging), 5);
+        assert_eq!(percent_from_level(1, PowerState::Discharging), 15);
+        assert_eq!(percent_from_level(9, PowerState::Discharging), 95);
+        assert_eq!(percent_from_level(10, PowerState::Discharging), 100);
+        assert_eq!(percent_from_level(10, PowerState::Charging), 100);
+        assert_eq!(percent_from_level(3, PowerState::Complete), 100);
+        assert_eq!(percent_from_level(5, PowerState::AbnormalVoltage), 0);
+        assert_eq!(percent_from_level(5, PowerState::ChargingError), 0);
     }
 
-    Ok(())
+    #[test]
+    fn low_battery_requires_discharging() {
+        let discharging = ControllerStatus {
+            index: 1,
+            product: "DualSense",
+            connection: "Bluetooth",
+            serial: "abc".into(),
+            percent: 5,
+            state: PowerState::Discharging,
+        };
+        let charging = ControllerStatus {
+            state: PowerState::Charging,
+            ..discharging.clone()
+        };
+        assert!(discharging.is_low_battery());
+        assert!(!charging.is_low_battery());
+    }
 }

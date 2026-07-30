@@ -24,23 +24,17 @@ pub fn icon_for_controllers(controllers: &[ControllerStatus]) -> Icon {
 
 pub fn tooltip_for_controllers(controllers: &[ControllerStatus]) -> String {
     if controllers.is_empty() {
-        return "No DualSense connected".into();
+        return "No DualSense".into();
     }
 
-    let mut lines = Vec::with_capacity(controllers.len() + 1);
-    lines.push("DualSense Battery".into());
-    for c in controllers {
-        lines.push(format!(
-            "#{}. {} ({}) [{}] — {}% {}",
-            c.index,
-            c.product,
-            c.connection,
-            c.serial,
-            c.percent,
-            c.state.as_str()
-        ));
-    }
-    lines.join("\n")
+    let lowest = controllers.iter().map(|c| c.percent).min().unwrap_or(0);
+    let count = controllers.len();
+    let noun = if count == 1 {
+        "controller"
+    } else {
+        "controllers"
+    };
+    format!("Lowest {lowest}% · {count} {noun}")
 }
 
 fn representative(controllers: &[ControllerStatus]) -> Option<&ControllerStatus> {

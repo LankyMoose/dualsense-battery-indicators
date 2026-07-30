@@ -1,5 +1,8 @@
 use crate::battery::{self, ControllerStatus};
 use crate::icon;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -8,8 +11,9 @@ use winit::event::StartCause;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const QUIT_ID: &str = "quit";
+const IDENTIFY_ID_PREFIX: &str = "identify:";
 
 #[derive(Debug)]
 enum UserEvent {
@@ -20,6 +24,8 @@ enum UserEvent {
 struct TrayApp {
     tray_icon: Option<TrayIcon>,
     controllers: Vec<ControllerStatus>,
+    /// True while an identify flash sequence is running (skip lightbar updates).
+    identifying: Arc<AtomicBool>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,7 +36,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    // Keep the tray event receiver alive so the crate doesn't drop events unused.
+    // Keep the receiver alive so tray events aren't dropped unused.
     let _tray_events = TrayIconEvent::receiver();
 
     let proxy = event_loop.create_proxy();
@@ -46,6 +52,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = TrayApp {
         tray_icon: None,
         controllers: Vec::new(),
+        identifying: Arc::new(AtomicBool::new(false)),
     };
 
     event_loop.run_app(&mut app)?;
@@ -54,14 +61,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 impl TrayApp {
     fn refresh(&mut self) {
-        match battery::read_all_controllers() {
+        if self.identifying.load(Ordering::SeqCst) {
+            return;
+        }
+
+        match battery::poll_controllers() {
             Ok(controllers) => self.controllers = controllers,
             Err(err) => eprintln!("warning: refresh failed: {err}"),
         }
-        self.apply_ui();
+        self.apply_tray();
     }
 
-    fn apply_ui(&mut self) {
+    fn apply_tray(&mut self) {
         let Some(tray) = self.tray_icon.as_mut() else {
             return;
         };
@@ -76,7 +87,7 @@ impl TrayApp {
     }
 
     fn create_tray(&mut self) {
-        self.controllers = battery::read_all_controllers().unwrap_or_default();
+        self.controllers = battery::poll_controllers().unwrap_or_default();
 
         let icon = icon::icon_for_controllers(&self.controllers);
         let tooltip = icon::tooltip_for_controllers(&self.controllers);
@@ -92,6 +103,31 @@ impl TrayApp {
             Err(err) => eprintln!("error: failed to create tray icon: {err}"),
         }
     }
+
+    fn identify(&self, serial: &str) {
+        let Some(controller) = self.controllers.iter().find(|c| c.serial == serial) else {
+            return;
+        };
+
+        if self
+            .identifying
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let serial = serial.to_string();
+        let percent = controller.percent;
+        let identifying = Arc::clone(&self.identifying);
+
+        thread::spawn(move || {
+            if let Err(err) = battery::identify_controller(&serial, percent) {
+                eprintln!("warning: identify failed for {serial}: {err}");
+            }
+            identifying.store(false, Ordering::SeqCst);
+        });
+    }
 }
 
 fn build_menu(controllers: &[ControllerStatus]) -> Menu {
@@ -101,8 +137,13 @@ fn build_menu(controllers: &[ControllerStatus]) -> Menu {
         let empty = MenuItem::new("No DualSense connected", false, None);
         let _ = menu.append(&empty);
     } else {
+        let hint = MenuItem::new("Click a controller to identify", false, None);
+        let _ = menu.append(&hint);
+        let _ = menu.append(&PredefinedMenuItem::separator());
+
         for controller in controllers {
-            let item = MenuItem::new(controller.menu_label(), true, None);
+            let id = format!("{IDENTIFY_ID_PREFIX}{}", controller.serial);
+            let item = MenuItem::with_id(id, controller.menu_label(), true, None);
             let _ = menu.append(&item);
         }
     }
@@ -111,6 +152,10 @@ fn build_menu(controllers: &[ControllerStatus]) -> Menu {
     let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
     let _ = menu.append(&quit);
     menu
+}
+
+fn parse_identify_id(id: &str) -> Option<&str> {
+    id.strip_prefix(IDENTIFY_ID_PREFIX)
 }
 
 impl ApplicationHandler<UserEvent> for TrayApp {
@@ -135,9 +180,12 @@ impl ApplicationHandler<UserEvent> for TrayApp {
         match event {
             UserEvent::Refresh => self.refresh(),
             UserEvent::MenuEvent(event) => {
-                if event.id.as_ref() == QUIT_ID {
+                let id = event.id.as_ref();
+                if id == QUIT_ID {
                     self.tray_icon.take();
                     event_loop.exit();
+                } else if let Some(serial) = parse_identify_id(id) {
+                    self.identify(serial);
                 }
             }
         }

@@ -21,9 +21,20 @@ const USB_REPORT_ID: u8 = 0x01;
 const CALIBRATION_FEATURE_REPORT: u8 = 0x05;
 const CALIBRATION_FEATURE_SIZE: usize = 41;
 
+const OUTPUT_REPORT_USB_ID: u8 = 0x02;
+const OUTPUT_REPORT_USB_SIZE: usize = 63;
+const OUTPUT_REPORT_BT_ID: u8 = 0x31;
+const OUTPUT_REPORT_BT_SIZE: usize = 78;
+const OUTPUT_REPORT_BT_TAG: u8 = 0x10;
+const OUTPUT_CRC32_SEED: u8 = 0xA2;
+const OUTPUT_VALID_FLAG1_LIGHTBAR: u8 = 1 << 2;
+
 const POWER_LEVEL_MASK: u8 = 0x0F;
 const POWER_STATE_SHIFT: u8 = 4;
 const MAX_POWER_LEVEL: u8 = 0x0A;
+
+pub const IDENTIFY_FLASH_MS: u64 = 150;
+pub const IDENTIFY_FLASH_COUNT: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerState {
@@ -97,9 +108,40 @@ struct BatteryStatus {
     percent: u8,
     state: PowerState,
     connection: &'static str,
+    is_bluetooth: bool,
 }
 
-pub fn read_all_controllers() -> Result<Vec<ControllerStatus>, String> {
+/// Map battery percent to a blue → purple → red hue.
+/// 100% → hue 240° (blue), 0% → hue 360° (red), passing through purple.
+pub fn color_for_battery_percent(percent: u8) -> (u8, u8, u8) {
+    let t = (100u8.saturating_sub(percent)) as f32 / 100.0;
+    let hue = 240.0 + t * 120.0; // 240..360
+    hsv_to_rgb(hue, 1.0, 1.0)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let c = v * s;
+    let h_prime = (h % 360.0) / 60.0;
+    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+    let m = v - c;
+
+    let (r1, g1, b1) = match h_prime as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+
+    (
+        ((r1 + m) * 255.0).round() as u8,
+        ((g1 + m) * 255.0).round() as u8,
+        ((b1 + m) * 255.0).round() as u8,
+    )
+}
+
+pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
     let api = HidApi::new().map_err(|e| e.to_string())?;
     let devices: Vec<&DeviceInfo> = api
         .device_list()
@@ -112,7 +154,7 @@ pub fn read_all_controllers() -> Result<Vec<ControllerStatus>, String> {
 
     let mut statuses = Vec::with_capacity(devices.len());
 
-    for (index, info) in devices.iter().enumerate() {
+    for info in devices {
         let product = product_name(info.product_id());
         let serial = info
             .serial_number()
@@ -120,9 +162,16 @@ pub fn read_all_controllers() -> Result<Vec<ControllerStatus>, String> {
             .unwrap_or("unknown")
             .to_string();
 
-        match info.open_device(&api).and_then(|device| read_battery(&device)) {
+        match info.open_device(&api).and_then(|device| {
+            let battery = read_battery(&device)?;
+            let (r, g, b) = color_for_battery_percent(battery.percent);
+            if let Err(err) = set_lightbar_rgb(&device, r, g, b, battery.is_bluetooth) {
+                eprintln!("warning: failed to set lightbar on {product}: {err}");
+            }
+            Ok(battery)
+        }) {
             Ok(battery) => statuses.push(ControllerStatus {
-                index: index + 1,
+                index: 0,
                 product,
                 connection: battery.connection,
                 serial,
@@ -130,13 +179,56 @@ pub fn read_all_controllers() -> Result<Vec<ControllerStatus>, String> {
                 state: battery.state,
             }),
             Err(err) => {
-                // Skip controllers we can't read this cycle; still report the rest.
                 eprintln!("warning: failed to read {product} ({serial}): {err}");
             }
         }
     }
 
+    statuses.sort_by(|a, b| a.serial.cmp(&b.serial));
+    for (i, status) in statuses.iter_mut().enumerate() {
+        status.index = i + 1;
+    }
+
     Ok(statuses)
+}
+
+pub fn apply_lightbar_rgb(serial: &str, r: u8, g: u8, b: u8) -> Result<(), String> {
+    let api = HidApi::new().map_err(|e| e.to_string())?;
+    let info = api
+        .device_list()
+        .find(|d| {
+            is_dualsense_gamepad(d)
+                && d.serial_number()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("unknown")
+                    == serial
+        })
+        .ok_or_else(|| format!("controller {serial} not found"))?;
+
+    let device = info.open_device(&api).map_err(|e| e.to_string())?;
+    let is_bluetooth = matches!(
+        device
+            .get_device_info()
+            .map_err(|e| e.to_string())?
+            .bus_type(),
+        BusType::Bluetooth
+    );
+    set_lightbar_rgb(&device, r, g, b, is_bluetooth).map_err(|e| e.to_string())
+}
+
+/// Flash white, then restore battery color, five times.
+pub fn identify_controller(serial: &str, percent: u8) -> Result<(), String> {
+    let normal = color_for_battery_percent(percent);
+    let flash_for = Duration::from_millis(IDENTIFY_FLASH_MS);
+
+    for _ in 0..IDENTIFY_FLASH_COUNT {
+        apply_lightbar_rgb(serial, 255, 255, 255)?;
+        thread::sleep(flash_for);
+        apply_lightbar_rgb(serial, normal.0, normal.1, normal.2)?;
+        thread::sleep(flash_for);
+    }
+
+    Ok(())
 }
 
 fn is_dualsense_gamepad(d: &DeviceInfo) -> bool {
@@ -170,8 +262,6 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
 
     let mut requested_full_report = false;
 
-    // Bluetooth starts in a truncated report mode. Requesting the calibration
-    // feature report switches it to the full report that includes battery data.
     for _ in 0..40 {
         let mut buf = vec![0u8; report_size];
         let n = device.read_timeout(&mut buf, 500)?;
@@ -223,6 +313,7 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
             percent,
             state,
             connection,
+            is_bluetooth,
         });
     }
 
@@ -235,5 +326,43 @@ fn request_full_bt_report(device: &HidDevice) -> Result<(), hidapi::HidError> {
     let mut feature = vec![0u8; CALIBRATION_FEATURE_SIZE];
     feature[0] = CALIBRATION_FEATURE_REPORT;
     device.get_feature_report(&mut feature)?;
+    Ok(())
+}
+
+fn set_lightbar_rgb(
+    device: &HidDevice,
+    r: u8,
+    g: u8,
+    b: u8,
+    is_bluetooth: bool,
+) -> Result<(), hidapi::HidError> {
+    if is_bluetooth {
+        let mut report = [0u8; OUTPUT_REPORT_BT_SIZE];
+        report[0] = OUTPUT_REPORT_BT_ID;
+        report[1] = 0x10;
+        report[2] = OUTPUT_REPORT_BT_TAG;
+        report[3 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
+        report[3 + 44] = r;
+        report[3 + 45] = g;
+        report[3 + 46] = b;
+
+        let crc = {
+            let mut data = Vec::with_capacity(OUTPUT_REPORT_BT_SIZE - 3);
+            data.push(OUTPUT_CRC32_SEED);
+            data.extend_from_slice(&report[..OUTPUT_REPORT_BT_SIZE - 4]);
+            crc32fast::hash(&data)
+        };
+        report[OUTPUT_REPORT_BT_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
+        device.write(&report)?;
+    } else {
+        let mut report = [0u8; OUTPUT_REPORT_USB_SIZE];
+        report[0] = OUTPUT_REPORT_USB_ID;
+        report[1 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
+        report[1 + 44] = r;
+        report[1 + 45] = g;
+        report[1 + 46] = b;
+        device.write(&report)?;
+    }
+
     Ok(())
 }

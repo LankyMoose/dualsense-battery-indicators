@@ -6,6 +6,7 @@ description = "Show DualSense (PS5) controller battery levels in the system tray
 license = "MIT"
 
 [dependencies]
+crc32fast = "1.5.0"
 hidapi = "2.6.6"
 tray-icon = { version = "0.24.2", default-features = false }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }

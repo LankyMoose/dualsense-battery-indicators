@@ -8,7 +8,7 @@ use crate::lightbar::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
@@ -16,14 +16,18 @@ use winit::event::StartCause;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(60);
+/// How often to scan for DualSense connect/disconnect.
+const PRESENCE_INTERVAL: Duration = Duration::from_secs(3);
+/// How often to re-read battery and refresh lightbar colors when membership is stable.
+const BATTERY_INTERVAL: Duration = Duration::from_secs(60);
 const QUIT_ID: &str = "quit";
 const IDENTIFY_ID_PREFIX: &str = "identify:";
 
 #[derive(Debug)]
 enum UserEvent {
     MenuEvent(MenuEvent),
-    Refresh,
+    /// Periodic tick: check presence; full poll when membership changes or battery is due.
+    Tick,
 }
 
 struct TrayApp {
@@ -33,6 +37,7 @@ struct TrayApp {
     identifying: Arc<AtomicBool>,
     /// Controllers currently in the critical low-battery bucket (serial, percent).
     low_battery: Arc<Mutex<Vec<(String, u8)>>>,
+    last_battery_poll: Instant,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,8 +53,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = event_loop.create_proxy();
     std::thread::spawn(move || {
         loop {
-            std::thread::sleep(POLL_INTERVAL);
-            if proxy.send_event(UserEvent::Refresh).is_err() {
+            std::thread::sleep(PRESENCE_INTERVAL);
+            if proxy.send_event(UserEvent::Tick).is_err() {
                 break;
             }
         }
@@ -64,6 +69,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         controllers: Vec::new(),
         identifying,
         low_battery,
+        last_battery_poll: Instant::now(),
     };
 
     event_loop.run_app(&mut app)?;
@@ -126,6 +132,32 @@ impl TrayApp {
         }
     }
 
+    fn known_serials(&self) -> Vec<String> {
+        let mut serials: Vec<String> = self.controllers.iter().map(|c| c.serial.clone()).collect();
+        serials.sort();
+        serials.dedup();
+        serials
+    }
+
+    fn on_tick(&mut self) {
+        if self.identifying.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let membership_changed = match battery::list_controller_serials() {
+            Ok(discovered) => discovered != self.known_serials(),
+            Err(err) => {
+                app_log::warn(format!("presence scan failed: {err}"));
+                false
+            }
+        };
+
+        let battery_due = self.last_battery_poll.elapsed() >= BATTERY_INTERVAL;
+        if membership_changed || battery_due {
+            self.refresh();
+        }
+    }
+
     fn refresh(&mut self) {
         if self.identifying.load(Ordering::SeqCst) {
             return;
@@ -135,6 +167,7 @@ impl TrayApp {
             Ok(controllers) => self.controllers = controllers,
             Err(err) => app_log::warn(format!("refresh failed: {err}")),
         }
+        self.last_battery_poll = Instant::now();
         self.sync_low_battery();
         self.apply_tray();
     }
@@ -155,6 +188,7 @@ impl TrayApp {
 
     fn create_tray(&mut self) {
         self.controllers = battery::poll_controllers().unwrap_or_default();
+        self.last_battery_poll = Instant::now();
         self.sync_low_battery();
 
         let icon = icon::icon_for_controllers(&self.controllers);
@@ -246,7 +280,7 @@ impl ApplicationHandler<UserEvent> for TrayApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Refresh => self.refresh(),
+            UserEvent::Tick => self.on_tick(),
             UserEvent::MenuEvent(event) => {
                 let id = event.id.as_ref();
                 if id == QUIT_ID {

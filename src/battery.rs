@@ -119,6 +119,26 @@ struct BatteryStatus {
     is_bluetooth: bool,
 }
 
+fn device_serial(info: &DeviceInfo) -> String {
+    info.serial_number()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Enumerate DualSense gamepad serials without opening devices (fast connect/disconnect check).
+pub fn list_controller_serials() -> Result<Vec<String>, String> {
+    let api = HidApi::new().map_err(|e| e.to_string())?;
+    let mut serials: Vec<String> = api
+        .device_list()
+        .filter(|d| is_dualsense_gamepad(d))
+        .map(device_serial)
+        .collect();
+    serials.sort();
+    serials.dedup();
+    Ok(serials)
+}
+
 pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
     let api = HidApi::new().map_err(|e| e.to_string())?;
     let devices: Vec<&DeviceInfo> = api
@@ -134,11 +154,7 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
 
     for info in devices {
         let product = product_name(info.product_id());
-        let serial = info
-            .serial_number()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown")
-            .to_string();
+        let serial = device_serial(info);
 
         match info.open_device(&api).and_then(|device| {
             let battery = read_battery(&device)?;

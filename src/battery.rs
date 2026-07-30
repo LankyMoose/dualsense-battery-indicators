@@ -219,9 +219,11 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
 
     let mut requested_full_report = false;
 
-    for _ in 0..40 {
+    // DualSense streams input reports when awake; a dead/sleeping pad must fail fast
+    // so disconnect is visible within a couple of liveness ticks.
+    for _ in 0..6 {
         let mut buf = vec![0u8; report_size];
-        let n = device.read_timeout(&mut buf, 500)?;
+        let n = device.read_timeout(&mut buf, 150)?;
         if n == 0 {
             continue;
         }

@@ -17,13 +17,18 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
 /// How often to scan for DualSense connect/disconnect.
 const PRESENCE_INTERVAL: Duration = Duration::from_secs(3);
-/// How often to re-read battery and refresh lightbar colors when membership is stable.
+/// How often to re-read battery / lightbar when membership is stable and pads are readable.
 const BATTERY_INTERVAL: Duration = Duration::from_secs(60);
+/// While the tray shows connected pads, re-probe often so a powered-off BT pad
+/// (still lingering in the HID list) is dropped quickly.
+const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
+/// When HID lists pads but battery reads keep failing, retry sooner than BATTERY_INTERVAL.
+const UNREAD_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const QUIT_ID: &str = "quit";
 #[cfg(windows)]
 const AUTOSTART_ID: &str = "autostart";
@@ -34,16 +39,23 @@ enum UserEvent {
     MenuEvent(MenuEvent),
     /// Periodic tick: check presence; full poll when membership changes or battery is due.
     Tick,
+    /// Result of a background `poll_controllers` call.
+    PollResult(Result<Vec<ControllerStatus>, String>),
 }
 
 struct TrayApp {
     tray_icon: Option<TrayIcon>,
     controllers: Vec<ControllerStatus>,
+    /// Last HID presence snapshot (serials), used to detect connect/disconnect.
+    last_discovered: Vec<String>,
     /// True while an identify flash sequence is running (pulse should yield).
     identifying: Arc<AtomicBool>,
+    /// True while a background battery poll is in flight.
+    refreshing: Arc<AtomicBool>,
     /// Controllers currently in the critical low-battery bucket (serial, percent).
     low_battery: Arc<Mutex<Vec<(String, u8)>>>,
     last_battery_poll: Instant,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,9 +85,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = TrayApp {
         tray_icon: None,
         controllers: Vec::new(),
+        last_discovered: Vec::new(),
         identifying,
+        refreshing: Arc::new(AtomicBool::new(false)),
         low_battery,
         last_battery_poll: Instant::now(),
+        proxy: event_loop.create_proxy(),
     };
 
     event_loop.run_app(&mut app)?;
@@ -125,6 +140,19 @@ fn start_low_battery_pulse_thread(
     });
 }
 
+fn controllers_equivalent(a: &[ControllerStatus], b: &[ControllerStatus]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.serial == y.serial
+            && x.percent == y.percent
+            && x.state == y.state
+            && x.connection == y.connection
+            && x.product == y.product
+    })
+}
+
 impl TrayApp {
     fn sync_low_battery(&self) {
         let list: Vec<(String, u8)> = self
@@ -138,44 +166,82 @@ impl TrayApp {
         }
     }
 
-    fn known_serials(&self) -> Vec<String> {
-        let mut serials: Vec<String> = self.controllers.iter().map(|c| c.serial.clone()).collect();
-        serials.sort();
-        serials.dedup();
-        serials
-    }
-
     fn on_tick(&mut self) {
-        if self.identifying.load(Ordering::SeqCst) {
+        if self.identifying.load(Ordering::SeqCst) || self.refreshing.load(Ordering::SeqCst) {
             return;
         }
 
-        let membership_changed = match battery::list_controller_serials() {
-            Ok(discovered) => discovered != self.known_serials(),
+        let discovered = match battery::list_controller_serials() {
+            Ok(serials) => serials,
             Err(err) => {
                 app_log::warn(format!("presence scan failed: {err}"));
-                false
+                return;
             }
         };
 
-        let battery_due = self.last_battery_poll.elapsed() >= BATTERY_INTERVAL;
-        if membership_changed || battery_due {
-            self.refresh();
-        }
-    }
+        let membership_changed = discovered != self.last_discovered;
+        self.last_discovered = discovered;
 
-    fn refresh(&mut self) {
-        if self.identifying.load(Ordering::SeqCst) {
+        // HID list went empty — update the tray immediately. A powered-off DualSense
+        // often disappears from enumeration well before the next battery poll.
+        if membership_changed && self.last_discovered.is_empty() {
+            if !self.controllers.is_empty() {
+                self.controllers.clear();
+                self.sync_low_battery();
+                self.apply_tray();
+            }
+            self.last_battery_poll = Instant::now();
             return;
         }
 
-        match battery::poll_controllers() {
-            Ok(controllers) => self.controllers = controllers,
+        let battery_due = self.last_battery_poll.elapsed() >= BATTERY_INTERVAL;
+        let liveness_due =
+            !self.controllers.is_empty() && self.last_battery_poll.elapsed() >= LIVENESS_INTERVAL;
+        // HID can list a pad that we cannot open/read yet (sleeping BT, exclusive access).
+        // Retry on a moderate interval — not every presence tick — so the UI stays responsive.
+        let unread_retry = !self.last_discovered.is_empty()
+            && self.controllers.is_empty()
+            && self.last_battery_poll.elapsed() >= UNREAD_RETRY_INTERVAL;
+
+        if membership_changed || battery_due || liveness_due || unread_retry {
+            self.request_refresh();
+        }
+    }
+
+    fn request_refresh(&mut self) {
+        if self.identifying.load(Ordering::SeqCst) {
+            return;
+        }
+        if self
+            .refreshing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let proxy = self.proxy.clone();
+        thread::spawn(move || {
+            let result = battery::poll_controllers();
+            let _ = proxy.send_event(UserEvent::PollResult(result));
+        });
+    }
+
+    fn on_poll_result(&mut self, result: Result<Vec<ControllerStatus>, String>) {
+        self.refreshing.store(false, Ordering::SeqCst);
+        self.last_battery_poll = Instant::now();
+
+        match result {
+            Ok(controllers) => {
+                if controllers_equivalent(&self.controllers, &controllers) {
+                    return;
+                }
+                self.controllers = controllers;
+                self.sync_low_battery();
+                self.apply_tray();
+            }
             Err(err) => app_log::warn(format!("refresh failed: {err}")),
         }
-        self.last_battery_poll = Instant::now();
-        self.sync_low_battery();
-        self.apply_tray();
     }
 
     fn apply_tray(&mut self) {
@@ -193,7 +259,10 @@ impl TrayApp {
     }
 
     fn create_tray(&mut self) {
-        self.controllers = battery::poll_controllers().unwrap_or_default();
+        // Show the tray immediately, then poll in the background so a stuck HID
+        // read cannot delay the icon for tens of seconds.
+        self.controllers = Vec::new();
+        self.last_discovered = battery::list_controller_serials().unwrap_or_default();
         self.last_battery_poll = Instant::now();
         self.sync_low_battery();
 
@@ -210,6 +279,8 @@ impl TrayApp {
             Ok(tray) => self.tray_icon = Some(tray),
             Err(err) => app_log::error(format!("failed to create tray icon: {err}")),
         }
+
+        self.request_refresh();
     }
 
     fn identify(&self, serial: &str) {
@@ -307,6 +378,7 @@ impl ApplicationHandler<UserEvent> for TrayApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Tick => self.on_tick(),
+            UserEvent::PollResult(result) => self.on_poll_result(result),
             UserEvent::MenuEvent(event) => {
                 let id = event.id.as_ref();
                 if id == QUIT_ID {

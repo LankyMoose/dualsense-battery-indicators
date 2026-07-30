@@ -1,0 +1,11 @@
+[package]
+name = "ps5-battery-display"
+version = "0.1.0"
+edition = "2024"
+description = "Show DualSense (PS5) controller battery levels in the system tray"
+license = "MIT"
+
+[dependencies]
+hidapi = "2.6.6"
+tray-icon = { version = "0.24.2", default-features = false }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }

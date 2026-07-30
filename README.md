@@ -39,6 +39,7 @@ cargo run --release
 ## Windows notes
 
 - Release builds use the Windows subsystem (no console window for the tray app).
+- The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\ps5-battery-display\app.log`
 - Autostart writes `ps5-battery-display.cmd` into the user Startup folder.
 

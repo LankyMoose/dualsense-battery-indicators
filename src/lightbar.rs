@@ -175,8 +175,14 @@ mod tests {
         assert_eq!(report[0], OUTPUT_REPORT_BT_ID);
         assert_eq!(report[2], OUTPUT_REPORT_BT_TAG);
         assert_eq!(report[3 + OFF_VALID_FLAG1], OUTPUT_VALID_FLAG1_LIGHTBAR);
-        assert_eq!(report[3 + OFF_VALID_FLAG2], OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP);
-        assert_eq!(report[3 + OFF_LIGHTBAR_SETUP], OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT);
+        assert_eq!(
+            report[3 + OFF_VALID_FLAG2],
+            OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP
+        );
+        assert_eq!(
+            report[3 + OFF_LIGHTBAR_SETUP],
+            OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT
+        );
         assert_eq!(report[3 + OFF_LIGHTBAR_R], 255);
         assert_eq!(report[3 + OFF_LIGHTBAR_G], 100);
         assert_eq!(report[3 + OFF_LIGHTBAR_B], 0);

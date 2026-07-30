@@ -20,7 +20,7 @@ pub fn icon_for_controllers(controllers: &[ControllerStatus]) -> Icon {
 pub fn tooltip_for_controllers(controllers: &[ControllerStatus]) -> String {
     let count = controllers.len();
     match count {
-        0 => "No controllers connected".into(),
+        0 => "No DualSense connected".into(),
         1 => "1 controller connected".into(),
         n => format!("{n} controllers connected"),
     }

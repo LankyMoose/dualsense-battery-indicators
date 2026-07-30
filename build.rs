@@ -6,7 +6,9 @@ mod icon_draw;
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const DISPLAY_NAME: &str = "DualSense Battery Indicators";
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -21,8 +23,11 @@ fn main() {
         let ico_path = out_dir.join("app.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico_path.to_str().expect("utf-8 icon path"));
-        res.set("ProductName", "PS5 Battery Display");
-        res.set("FileDescription", "DualSense battery tray app");
+        res.set("ProductName", DISPLAY_NAME);
+        res.set(
+            "FileDescription",
+            "Show DualSense controller battery levels in the system tray",
+        );
         if let Err(err) = res.compile() {
             // Missing Windows SDK / RC tooling should not block non-icon builds in CI-like envs.
             println!("cargo:warning=winres failed to embed icon: {err}");
@@ -33,20 +38,15 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-fn write_embedded_bytes(out_dir: &PathBuf, connected: &[u8], dim: &[u8]) {
+fn write_embedded_bytes(out_dir: &Path, connected: &[u8], dim: &[u8]) {
     let path = out_dir.join("icon_embedded.rs");
     let mut file = fs::File::create(&path).expect("create icon_embedded.rs");
-    writeln!(
-        file,
-        "pub const CONNECTED_RGBA: &[u8] = &{:?};",
-        connected
-    )
-    .unwrap();
+    writeln!(file, "pub const CONNECTED_RGBA: &[u8] = &{:?};", connected).unwrap();
     writeln!(file, "pub const DIM_RGBA: &[u8] = &{:?};", dim).unwrap();
 }
 
 #[cfg(windows)]
-fn write_app_ico(out_dir: &PathBuf, connected_32: &[u8]) {
+fn write_app_ico(out_dir: &Path, connected_32: &[u8]) {
     use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
 
     let mut icon_dir = IconDir::new(ResourceType::Icon);

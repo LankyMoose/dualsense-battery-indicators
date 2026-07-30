@@ -1,40 +1,47 @@
-# PS5 Battery Display
+# DualSense Battery Indicators
 
-System tray app that shows connected DualSense (PS5) controller battery levels, colors each lightbar from battery level, and can identify a controller by flashing its light.
+System tray app that shows connected DualSense controller battery levels, colors each lightbar from battery level, and can identify a controller by flashing its light.
+
+**Unofficial.** DualSense, PlayStation, and related marks are trademarks of Sony Interactive Entertainment Inc. This project is not affiliated with, endorsed by, or sponsored by Sony.
 
 ## Features
 
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
 - Menu lists each controller (battery % + status); click one to **identify** (white flash ×5)
-- **Start with Windows** check item toggles user Startup autostart
+- **Start with Windows** check item toggles user Startup autostart (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar hue slides **blue → purple → red** as battery drops (updated about once a minute)
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**
 - Single-instance (second launch exits quietly)
-- Logs to a file (see below)
+- Logs to a file (see Troubleshooting)
 
 ## Build
+
+Requires Rust **1.85+** (edition 2024).
 
 ```bash
 cargo build --release
 ```
 
-Binary: `target/release/ps5-battery-display` (`.exe` on Windows).
+Binary: `target/release/dualsense-battery-indicators` (`.exe` on Windows).
+
+To rename the app later, change `package.name` in `Cargo.toml` and `DISPLAY_NAME` in `src/app_meta.rs` (runtime paths follow the package name).
 
 ## Run
 
 ```bash
 cargo run --release
 # or
-./target/release/ps5-battery-display
+./target/release/dualsense-battery-indicators
 ```
 
 ### CLI
 
 | Flag | Description |
 |------|-------------|
-| `--version` / `-V` | Print version and exit |
+| `-h` / `--help` | Print usage and exit |
+| `-V` / `--version` | Print version and exit |
 | `--install-autostart` | Windows: add a Startup entry for this exe |
 | `--uninstall-autostart` | Windows: remove that Startup entry |
 
@@ -42,8 +49,8 @@ cargo run --release
 
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
-- Log file: `%APPDATA%\ps5-battery-display\app.log`
-- Autostart writes `ps5-battery-display.cmd` into the user Startup folder.
+- Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
+- Autostart writes `dualsense-battery-indicators.cmd` into the user Startup folder (also toggleable from the tray menu).
 
 ## Platform support
 
@@ -68,6 +75,26 @@ cargo run --release
 
 DualSense firmware reports battery in **11 coarse steps** (0–10). Percentages use the Linux mid-point mapping (e.g. step 0 → 5%, step 9 → 95%, step 10/full → 100%).
 
+## Troubleshooting
+
+- **Log file**
+  - Windows: `%APPDATA%\dualsense-battery-indicators\app.log`
+  - Unix: `$XDG_STATE_HOME/dualsense-battery-indicators/app.log` or `~/.local/state/dualsense-battery-indicators/app.log`
+- **Second launch does nothing** — only one instance is allowed; the second process exits after logging.
+- **Exe icon looks stale in Explorer** — rebuild release, then refresh the folder or restart Explorer (Windows caches icons).
+- **Controller not listed** — wait a few seconds after power-on (presence is scanned every 3s); check the log if open/read fails.
+
+## Releases
+
+CI builds on Windows. To publish a binary:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -1,22 +1,15 @@
 //! Windows Startup-folder autostart helpers.
 
 use crate::app_log;
+use crate::app_meta::PKG_NAME;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const STARTUP_NAME: &str = "ps5-battery-display.cmd";
-
-pub fn is_supported() -> bool {
-    cfg!(windows)
-}
-
 pub fn is_enabled() -> bool {
     #[cfg(windows)]
     {
-        startup_path()
-            .map(|path| path.exists())
-            .unwrap_or(false)
+        startup_path().map(|path| path.exists()).unwrap_or(false)
     }
 
     #[cfg(not(windows))]
@@ -26,11 +19,7 @@ pub fn is_enabled() -> bool {
 }
 
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
-    if enabled {
-        install()
-    } else {
-        uninstall()
-    }
+    if enabled { install() } else { uninstall() }
 }
 
 pub fn install() -> Result<(), String> {
@@ -73,8 +62,13 @@ pub fn uninstall() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn startup_filename() -> String {
+    format!("{PKG_NAME}.cmd")
+}
+
+#[cfg(windows)]
 fn startup_path() -> Result<PathBuf, String> {
-    Ok(startup_dir()?.join(STARTUP_NAME))
+    Ok(startup_dir()?.join(startup_filename()))
 }
 
 #[cfg(windows)]

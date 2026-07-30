@@ -67,7 +67,10 @@ mod tests {
     fn empty_battery_is_redish() {
         for percent in [0u8, 5] {
             let c = color_for_battery_percent(percent);
-            assert!(c.r > c.g && c.r >= c.b, "expected red-dominant at {percent}%, got {c:?}");
+            assert!(
+                c.r > c.g && c.r >= c.b,
+                "expected red-dominant at {percent}%, got {c:?}"
+            );
         }
     }
 }

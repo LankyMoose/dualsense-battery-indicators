@@ -1,10 +1,16 @@
 [package]
-name = "ps5-battery-display"
+name = "dualsense-battery-indicators"
 version = "0.1.0"
 edition = "2024"
-description = "Show DualSense (PS5) controller battery levels in the system tray"
+rust-version = "1.85"
+description = "DualSense Battery Indicators — show DualSense controller battery levels in the system tray"
+authors = ["LankyMoose"]
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/LankyMoose/dualsense-battery-indicators"
+homepage = "https://github.com/LankyMoose/dualsense-battery-indicators"
+keywords = ["dualsense", "playstation", "battery", "hid", "tray"]
+categories = ["hardware-support", "gui"]
 build = "build.rs"
 
 [dependencies]

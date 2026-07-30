@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app_log;
+mod app_meta;
 mod autostart;
 mod battery;
 mod color;
@@ -8,6 +9,7 @@ mod icon;
 mod lightbar;
 mod tray;
 
+use app_meta::{DISPLAY_NAME, PKG_NAME, PKG_VERSION};
 use single_instance::SingleInstance;
 use std::env;
 use std::io::{self, Write};
@@ -17,13 +19,16 @@ fn main() -> ExitCode {
     app_log::init();
 
     let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        attach_console_for_cli();
+        print_help();
+        return ExitCode::SUCCESS;
+    }
+
     if args.iter().any(|a| a == "--version" || a == "-V") {
         attach_console_for_cli();
-        println!(
-            "{} {}",
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("{PKG_NAME} {PKG_VERSION}");
         return ExitCode::SUCCESS;
     }
 
@@ -57,7 +62,15 @@ fn main() -> ExitCode {
         };
     }
 
-    let instance = match SingleInstance::new("ps5-battery-display") {
+    if let Some(unknown) = args.first() {
+        attach_console_for_cli();
+        eprintln!("error: unknown argument '{unknown}'");
+        eprintln!();
+        print_help();
+        return ExitCode::FAILURE;
+    }
+
+    let instance = match SingleInstance::new(PKG_NAME) {
         Ok(instance) => instance,
         Err(err) => {
             app_log::error(format!("single-instance init failed: {err}"));
@@ -75,6 +88,20 @@ fn main() -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn print_help() {
+    println!("{DISPLAY_NAME} ({PKG_NAME}) {PKG_VERSION}");
+    println!();
+    println!("Usage: {PKG_NAME} [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  -h, --help                 Show this help and exit");
+    println!("  -V, --version              Print version and exit");
+    println!("      --install-autostart    Windows: add a Startup entry for this exe");
+    println!("      --uninstall-autostart  Windows: remove that Startup entry");
+    println!();
+    println!("With no options, starts the system tray app.");
 }
 
 fn attach_console_for_cli() {

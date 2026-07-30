@@ -2,10 +2,10 @@
 
 use crate::app_log;
 use crate::battery::is_dualsense_gamepad;
-use crate::color::{color_for_battery_percent, Rgb};
+use crate::color::{Rgb, color_for_battery_percent};
 use hidapi::{BusType, HidApi, HidDevice};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 

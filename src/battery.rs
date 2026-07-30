@@ -160,9 +160,7 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
             let battery = read_battery(&device)?;
             let color = color_for_battery_percent(battery.percent);
             with_lightbar_lock(|| {
-                if let Err(err) =
-                    set_lightbar_on_device(&device, color, battery.is_bluetooth)
-                {
+                if let Err(err) = set_lightbar_on_device(&device, color, battery.is_bluetooth) {
                     lightbar::warn_lightbar(product, err);
                 }
             });

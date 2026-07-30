@@ -27,7 +27,7 @@ pub fn render(body: Rgba, shade: Rgba, accent: Rgba) -> Vec<Rgba> {
 }
 
 fn flatten(px: Vec<Rgba>) -> Vec<u8> {
-    px.into_iter().flat_map(|c| c).collect()
+    px.into_iter().flatten().collect()
 }
 
 /// Nearest-neighbor scale of a SIZE×SIZE RGBA buffer to `out_size`×`out_size`.

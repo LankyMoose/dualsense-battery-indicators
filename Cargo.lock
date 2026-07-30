@@ -377,6 +377,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dualsense-battery-indicators"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "hidapi",
+ "ico",
+ "single-instance",
+ "tray-icon",
+ "winit",
+ "winres",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1563,19 +1576,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "ps5-battery-display"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "hidapi",
- "ico",
- "single-instance",
- "tray-icon",
- "winit",
- "winres",
 ]
 
 [[package]]

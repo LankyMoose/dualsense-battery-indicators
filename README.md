@@ -7,6 +7,7 @@ System tray app that shows connected DualSense (PS5) controller battery levels, 
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
 - Menu lists each controller (battery % + status); click one to **identify** (white flash ×5)
+- **Start with Windows** check item toggles user Startup autostart
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar hue slides **blue → purple → red** as battery drops (updated about once a minute)
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**

@@ -1,4 +1,5 @@
 use crate::app_log;
+use crate::autostart;
 use crate::battery::{self, ControllerStatus};
 use crate::color::color_for_battery_percent;
 use crate::icon;
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -21,6 +22,7 @@ const PRESENCE_INTERVAL: Duration = Duration::from_secs(3);
 /// How often to re-read battery and refresh lightbar colors when membership is stable.
 const BATTERY_INTERVAL: Duration = Duration::from_secs(60);
 const QUIT_ID: &str = "quit";
+const AUTOSTART_ID: &str = "autostart";
 const IDENTIFY_ID_PREFIX: &str = "identify:";
 
 #[derive(Debug)]
@@ -230,6 +232,14 @@ impl TrayApp {
             identifying.store(false, Ordering::SeqCst);
         });
     }
+
+    fn toggle_autostart(&mut self) {
+        let enable = !autostart::is_enabled();
+        if let Err(err) = autostart::set_enabled(enable) {
+            app_log::error(format!("autostart toggle failed: {err}"));
+        }
+        self.apply_tray();
+    }
 }
 
 fn build_menu(controllers: &[ControllerStatus]) -> Menu {
@@ -251,6 +261,14 @@ fn build_menu(controllers: &[ControllerStatus]) -> Menu {
     }
 
     let _ = menu.append(&PredefinedMenuItem::separator());
+    let autostart = CheckMenuItem::with_id(
+        AUTOSTART_ID,
+        "Start with Windows",
+        autostart::is_supported(),
+        autostart::is_enabled(),
+        None,
+    );
+    let _ = menu.append(&autostart);
     let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
     let _ = menu.append(&quit);
     menu
@@ -286,6 +304,8 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 if id == QUIT_ID {
                     self.tray_icon.take();
                     event_loop.exit();
+                } else if id == AUTOSTART_ID {
+                    self.toggle_autostart();
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 }

@@ -15,7 +15,20 @@ const OUTPUT_REPORT_BT_ID: u8 = 0x31;
 const OUTPUT_REPORT_BT_SIZE: usize = 78;
 const OUTPUT_REPORT_BT_TAG: u8 = 0x10;
 const OUTPUT_CRC32_SEED: u8 = 0xA2;
+
+/// Offsets into the DualSense common output payload (after report ID / BT header).
+const OFF_VALID_FLAG1: usize = 1;
+const OFF_VALID_FLAG2: usize = 38;
+const OFF_LIGHTBAR_SETUP: usize = 41;
+const OFF_LIGHTBAR_R: usize = 44;
+const OFF_LIGHTBAR_G: usize = 45;
+const OFF_LIGHTBAR_B: usize = 46;
+
 const OUTPUT_VALID_FLAG1_LIGHTBAR: u8 = 1 << 2;
+/// Must be set with [`OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT`] or RGB writes are ignored
+/// until something else (e.g. Steam) has initialized the lightbar.
+const OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP: u8 = 1 << 1;
+const OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT: u8 = 1 << 1;
 
 pub const IDENTIFY_FLASH_MS: u64 = 150;
 pub const IDENTIFY_FLASH_COUNT: u32 = 5;
@@ -74,10 +87,7 @@ pub fn set_lightbar_on_device(
         report[0] = OUTPUT_REPORT_BT_ID;
         report[1] = next_bt_seq_tag();
         report[2] = OUTPUT_REPORT_BT_TAG;
-        report[3 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
-        report[3 + 44] = color.r;
-        report[3 + 45] = color.g;
-        report[3 + 46] = color.b;
+        fill_lightbar_common(&mut report[3..], color);
 
         let crc = {
             let mut data = Vec::with_capacity(OUTPUT_REPORT_BT_SIZE - 3);
@@ -90,14 +100,23 @@ pub fn set_lightbar_on_device(
     } else {
         let mut report = [0u8; OUTPUT_REPORT_USB_SIZE];
         report[0] = OUTPUT_REPORT_USB_ID;
-        report[1 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
-        report[1 + 44] = color.r;
-        report[1 + 45] = color.g;
-        report[1 + 46] = color.b;
+        fill_lightbar_common(&mut report[1..], color);
         device.write(&report)?;
     }
 
     Ok(())
+}
+
+/// Common DualSense output fields for lightbar RGB + setup (USB payload / BT after header).
+fn fill_lightbar_common(common: &mut [u8], color: Rgb) {
+    common[OFF_VALID_FLAG1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
+    // Without this, color changes are ignored when nothing else (e.g. Steam) has
+    // already initialized the lightbar hardware path.
+    common[OFF_VALID_FLAG2] = OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP;
+    common[OFF_LIGHTBAR_SETUP] = OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT;
+    common[OFF_LIGHTBAR_R] = color.r;
+    common[OFF_LIGHTBAR_G] = color.g;
+    common[OFF_LIGHTBAR_B] = color.b;
 }
 
 /// Hold the lightbar lock for a closure (poll path).
@@ -130,10 +149,7 @@ pub fn build_bt_output_report_for_test(color: Rgb) -> [u8; OUTPUT_REPORT_BT_SIZE
     report[0] = OUTPUT_REPORT_BT_ID;
     report[1] = next_bt_seq_tag();
     report[2] = OUTPUT_REPORT_BT_TAG;
-    report[3 + 1] = OUTPUT_VALID_FLAG1_LIGHTBAR;
-    report[3 + 44] = color.r;
-    report[3 + 45] = color.g;
-    report[3 + 46] = color.b;
+    fill_lightbar_common(&mut report[3..], color);
     let crc = {
         let mut data = Vec::with_capacity(OUTPUT_REPORT_BT_SIZE - 3);
         data.push(OUTPUT_CRC32_SEED);
@@ -158,9 +174,12 @@ mod tests {
         assert_eq!(report.len(), 78);
         assert_eq!(report[0], OUTPUT_REPORT_BT_ID);
         assert_eq!(report[2], OUTPUT_REPORT_BT_TAG);
-        assert_eq!(report[3 + 44], 255);
-        assert_eq!(report[3 + 45], 100);
-        assert_eq!(report[3 + 46], 0);
+        assert_eq!(report[3 + OFF_VALID_FLAG1], OUTPUT_VALID_FLAG1_LIGHTBAR);
+        assert_eq!(report[3 + OFF_VALID_FLAG2], OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP);
+        assert_eq!(report[3 + OFF_LIGHTBAR_SETUP], OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT);
+        assert_eq!(report[3 + OFF_LIGHTBAR_R], 255);
+        assert_eq!(report[3 + OFF_LIGHTBAR_G], 100);
+        assert_eq!(report[3 + OFF_LIGHTBAR_B], 0);
         // CRC bytes should not all be zero after hashing non-empty payload.
         assert!(report[74..78].iter().any(|&b| b != 0));
     }

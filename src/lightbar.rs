@@ -1,7 +1,7 @@
 //! DualSense lightbar HID output (serialized writes).
 
 use crate::app_log;
-use crate::battery::is_dualsense_gamepad;
+use crate::battery::{is_dualsense_gamepad, normalize_identity, resolve_device_identity};
 use crate::color::{Rgb, color_for_battery_percent};
 use hidapi::{BusType, HidApi, HidDevice};
 use std::sync::Mutex;
@@ -52,27 +52,34 @@ pub fn apply_lightbar_rgb(serial: &str, color: Rgb) -> Result<(), String> {
     apply_lightbar_rgb_unlocked(serial, color)
 }
 
-fn apply_lightbar_rgb_unlocked(serial: &str, color: Rgb) -> Result<(), String> {
+/// Apply lightbar while already holding [`LIGHTBAR_LOCK`] (poll / identify).
+pub(crate) fn apply_lightbar_rgb_unlocked(serial: &str, color: Rgb) -> Result<(), String> {
     let api = HidApi::new().map_err(|e| e.to_string())?;
-    let info = api
-        .device_list()
-        .find(|d| {
-            is_dualsense_gamepad(d)
-                && d.serial_number()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("unknown")
-                    == serial
-        })
-        .ok_or_else(|| format!("controller {serial} not found"))?;
+    let target = normalize_identity(serial);
 
-    let device = info.open_device(&api).map_err(|e| e.to_string())?;
-    let is_bluetooth = matches!(
-        device
-            .get_device_info()
-            .map_err(|e| e.to_string())?
-            .bus_type(),
-        BusType::Bluetooth
-    );
+    // Prefer USB when the same pad appears on both buses.
+    let mut best: Option<(HidDevice, bool, bool)> = None; // device, is_bluetooth, is_usb
+    for info in api.device_list().filter(|d| is_dualsense_gamepad(d)) {
+        let device = match info.open_device(&api) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let identity = resolve_device_identity(info, &device);
+        if identity != target {
+            continue;
+        }
+        let is_bluetooth = matches!(info.bus_type(), BusType::Bluetooth);
+        let is_usb = matches!(info.bus_type(), BusType::Usb);
+        let replace = match &best {
+            None => true,
+            Some((_, _, prev_is_usb)) => is_usb && !*prev_is_usb,
+        };
+        if replace {
+            best = Some((device, is_bluetooth, is_usb));
+        }
+    }
+
+    let (device, is_bluetooth, _) = best.ok_or_else(|| format!("controller {serial} not found"))?;
     set_lightbar_on_device(&device, color, is_bluetooth).map_err(|e| e.to_string())
 }
 

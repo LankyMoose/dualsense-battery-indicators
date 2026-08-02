@@ -62,6 +62,11 @@ fn main() -> ExitCode {
         };
     }
 
+    if args.iter().any(|a| a == "--list-controllers") {
+        attach_console_for_cli();
+        return list_controllers_cli();
+    }
+
     if let Some(unknown) = args.first() {
         attach_console_for_cli();
         eprintln!("error: unknown argument '{unknown}'");
@@ -100,6 +105,7 @@ fn print_help() {
     println!("  -V, --version              Print version and exit");
     println!("      --install-autostart    Windows: add a Startup entry for this exe");
     println!("      --uninstall-autostart  Windows: remove that Startup entry");
+    println!("      --list-controllers     Print connected DualSense pads and exit");
     println!();
     println!("With no options, starts the system tray app.");
 }
@@ -120,5 +126,33 @@ fn attach_console_for_cli() {
             }
         }
         let _ = io::stdout().flush();
+    }
+}
+
+fn list_controllers_cli() -> ExitCode {
+    match battery::poll_controllers() {
+        Ok(statuses) => {
+            if statuses.is_empty() {
+                println!("No DualSense controllers found.");
+            } else {
+                println!("{} controller(s):", statuses.len());
+                for s in &statuses {
+                    println!(
+                        "  #{} {} ({}) id={} {}% {}",
+                        s.index,
+                        s.product,
+                        s.connection,
+                        s.serial,
+                        s.percent,
+                        s.state.as_str()
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
     }
 }

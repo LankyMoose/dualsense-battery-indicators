@@ -2,7 +2,7 @@
 
 use crate::app_log;
 use crate::color::color_for_battery_percent;
-use crate::lightbar::{self, set_lightbar_on_device, with_lightbar_lock};
+use crate::lightbar::{self, with_lightbar_lock};
 use hidapi::{BusType, DeviceInfo, HidApi, HidDevice};
 use std::thread;
 use std::time::Duration;
@@ -25,6 +25,9 @@ const BT_REPORT_FULL: u8 = 0x31;
 const USB_REPORT_ID: u8 = 0x01;
 const CALIBRATION_FEATURE_REPORT: u8 = 0x05;
 const CALIBRATION_FEATURE_SIZE: usize = 41;
+/// DualSense pairing-info feature report (Linux hid-playstation).
+const PAIRING_INFO_FEATURE_REPORT: u8 = 0x09;
+const PAIRING_INFO_FEATURE_SIZE: usize = 20;
 
 const POWER_LEVEL_MASK: u8 = 0x0F;
 const POWER_STATE_SHIFT: u8 = 4;
@@ -116,27 +119,108 @@ struct BatteryStatus {
     percent: u8,
     state: PowerState,
     connection: &'static str,
-    is_bluetooth: bool,
 }
 
-fn device_serial(info: &DeviceInfo) -> String {
+fn hid_serial(info: &DeviceInfo) -> String {
     info.serial_number()
         .filter(|s| !s.is_empty())
         .unwrap_or("unknown")
         .to_string()
 }
 
-/// Enumerate DualSense gamepad serials without opening devices (fast connect/disconnect check).
+fn is_known_serial(serial: &str) -> bool {
+    !serial.is_empty() && serial != "unknown"
+}
+
+/// Normalize MAC-style identities so `AA:BB:…` and `aabb…` compare equal.
+pub(crate) fn normalize_identity(serial: &str) -> String {
+    serial
+        .chars()
+        .filter(|c| *c != ':' && *c != '-')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Format a little-endian MAC (as in feature report 0x09) like Windows BT HID serials.
+fn format_mac_from_le(mac_le: &[u8; 6]) -> String {
+    mac_le.iter().rev().map(|b| format!("{b:02x}")).collect()
+}
+
+fn read_mac_address_le(device: &HidDevice) -> Result<[u8; 6], hidapi::HidError> {
+    let mut buf = vec![0u8; PAIRING_INFO_FEATURE_SIZE];
+    buf[0] = PAIRING_INFO_FEATURE_REPORT;
+    let n = device.get_feature_report(&mut buf)?;
+    if n < 7 || buf[0] != PAIRING_INFO_FEATURE_REPORT {
+        return Err(hidapi::HidError::HidApiError {
+            message: format!("pairing-info report too short or unexpected id ({n} bytes)"),
+        });
+    }
+    let mut mac = [0u8; 6];
+    mac.copy_from_slice(&buf[1..7]);
+    Ok(mac)
+}
+
+/// Stable pad identity: HID serial when present, otherwise MAC from pairing-info.
+/// Windows often leaves the USB serial empty while Bluetooth exposes the MAC.
+pub(crate) fn resolve_device_identity(info: &DeviceInfo, device: &HidDevice) -> String {
+    let hid = hid_serial(info);
+    if is_known_serial(&hid) {
+        return normalize_identity(&hid);
+    }
+    match read_mac_address_le(device) {
+        Ok(mac) => format_mac_from_le(&mac),
+        Err(err) => {
+            app_log::warn(format!(
+                "could not read MAC for {} over {}: {err}",
+                product_name(info.product_id()),
+                match info.bus_type() {
+                    BusType::Usb => "USB",
+                    BusType::Bluetooth => "Bluetooth",
+                    _ => "unknown bus",
+                }
+            ));
+            "unknown".into()
+        }
+    }
+}
+
+/// Presence keys for connect/disconnect (HID paths — unique per USB/BT node).
 pub fn list_controller_serials() -> Result<Vec<String>, String> {
     let api = HidApi::new().map_err(|e| e.to_string())?;
-    let mut serials: Vec<String> = api
+    let mut keys: Vec<String> = api
         .device_list()
         .filter(|d| is_dualsense_gamepad(d))
-        .map(device_serial)
+        .map(|d| d.path().to_string_lossy().into_owned())
         .collect();
-    serials.sort();
-    serials.dedup();
-    Ok(serials)
+    keys.sort();
+    Ok(keys)
+}
+
+/// Collapse the same physical pad enumerated on USB and Bluetooth (prefer USB).
+fn dedupe_statuses(mut statuses: Vec<ControllerStatus>) -> Vec<ControllerStatus> {
+    let mut unique: Vec<ControllerStatus> = Vec::with_capacity(statuses.len());
+
+    for status in statuses.drain(..) {
+        if !is_known_serial(&status.serial) {
+            unique.push(status);
+            continue;
+        }
+
+        if let Some(existing) = unique
+            .iter_mut()
+            .find(|s| is_known_serial(&s.serial) && s.serial == status.serial)
+        {
+            let status_is_usb = status.connection == "USB";
+            let existing_is_usb = existing.connection == "USB";
+            if status_is_usb && !existing_is_usb {
+                *existing = status;
+            }
+        } else {
+            unique.push(status);
+        }
+    }
+
+    unique
 }
 
 pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
@@ -154,19 +238,14 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
 
     for info in devices {
         let product = product_name(info.product_id());
-        let serial = device_serial(info);
+        let hid = hid_serial(info);
 
         match info.open_device(&api).and_then(|device| {
+            let serial = resolve_device_identity(info, &device);
             let battery = read_battery(&device)?;
-            let color = color_for_battery_percent(battery.percent);
-            with_lightbar_lock(|| {
-                if let Err(err) = set_lightbar_on_device(&device, color, battery.is_bluetooth) {
-                    lightbar::warn_lightbar(product, err);
-                }
-            });
-            Ok(battery)
+            Ok((serial, battery))
         }) {
-            Ok(battery) => statuses.push(ControllerStatus {
+            Ok((serial, battery)) => statuses.push(ControllerStatus {
                 index: 0,
                 product,
                 connection: battery.connection,
@@ -175,15 +254,28 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
                 state: battery.state,
             }),
             Err(err) => {
-                app_log::warn(format!("failed to read {product} ({serial}): {err}"));
+                app_log::warn(format!(
+                    "failed to read {product} (hid serial {hid}): {err}"
+                ));
             }
         }
     }
 
+    let mut statuses = dedupe_statuses(statuses);
     statuses.sort_by(|a, b| a.serial.cmp(&b.serial));
     for (i, status) in statuses.iter_mut().enumerate() {
         status.index = i + 1;
     }
+
+    // Apply lightbar once per physical pad (after USB/BT collapse).
+    with_lightbar_lock(|| {
+        for status in &statuses {
+            let color = color_for_battery_percent(status.percent);
+            if let Err(err) = lightbar::apply_lightbar_rgb_unlocked(&status.serial, color) {
+                lightbar::warn_lightbar(status.product, err);
+            }
+        }
+    });
 
     Ok(statuses)
 }
@@ -267,7 +359,6 @@ fn read_battery(device: &HidDevice) -> Result<BatteryStatus, hidapi::HidError> {
             percent,
             state,
             connection,
-            is_bluetooth,
         });
     }
 
@@ -334,5 +425,48 @@ mod tests {
         };
         assert!(discharging.is_low_battery());
         assert!(!charging.is_low_battery());
+    }
+
+    #[test]
+    fn mac_from_le_matches_windows_bt_serial_style() {
+        // Feature report stores MAC little-endian; Windows BT serial is big-endian hex.
+        let mac_le = [0x26, 0x69, 0x15, 0x48, 0x46, 0x44];
+        assert_eq!(format_mac_from_le(&mac_le), "444648156926");
+    }
+
+    #[test]
+    fn normalize_identity_strips_separators_and_case() {
+        assert_eq!(
+            normalize_identity("AA:BB:CC:DD:EE:FF"),
+            normalize_identity("aa-bb-cc-dd-ee-ff")
+        );
+    }
+
+    #[test]
+    fn dedupe_prefers_usb_for_same_identity() {
+        let bt = ControllerStatus {
+            index: 0,
+            product: "DualSense",
+            connection: "Bluetooth",
+            serial: "444648156926".into(),
+            percent: 35,
+            state: PowerState::Charging,
+        };
+        let usb = ControllerStatus {
+            connection: "USB",
+            percent: 35,
+            ..bt.clone()
+        };
+        let other = ControllerStatus {
+            serial: "444648164f65".into(),
+            percent: 75,
+            state: PowerState::Discharging,
+            connection: "Bluetooth",
+            ..bt.clone()
+        };
+        let merged = dedupe_statuses(vec![bt, usb, other]);
+        assert_eq!(merged.len(), 2);
+        let charging = merged.iter().find(|s| s.serial == "444648156926").unwrap();
+        assert_eq!(charging.connection, "USB");
     }
 }

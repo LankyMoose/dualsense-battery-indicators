@@ -5,8 +5,12 @@ mod app_meta;
 mod autostart;
 mod battery;
 mod color;
+#[cfg(feature = "dev-emulate")]
+mod emulate;
 mod icon;
 mod lightbar;
+mod notify;
+mod prefs;
 mod tray;
 
 use app_meta::{DISPLAY_NAME, PKG_NAME, PKG_VERSION};
@@ -67,6 +71,13 @@ fn main() -> ExitCode {
         return list_controllers_cli();
     }
 
+    #[cfg(feature = "dev-emulate")]
+    let (dev_mode, args) = {
+        let dev_mode = args.iter().any(|a| a == "--dev");
+        let args: Vec<String> = args.into_iter().filter(|a| a != "--dev").collect();
+        (dev_mode, args)
+    };
+
     if let Some(unknown) = args.first() {
         attach_console_for_cli();
         eprintln!("error: unknown argument '{unknown}'");
@@ -87,7 +98,12 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Err(err) = tray::run() {
+    #[cfg(feature = "dev-emulate")]
+    let tray_result = tray::run(dev_mode);
+    #[cfg(not(feature = "dev-emulate"))]
+    let tray_result = tray::run();
+
+    if let Err(err) = tray_result {
         app_log::error(format!("tray exited with error: {err}"));
         ExitCode::FAILURE
     } else {
@@ -106,6 +122,8 @@ fn print_help() {
     println!("      --install-autostart    Windows: add a Startup entry for this exe");
     println!("      --uninstall-autostart  Windows: remove that Startup entry");
     println!("      --list-controllers     Print connected DualSense pads and exit");
+    #[cfg(feature = "dev-emulate")]
+    println!("      --dev                  Enable Developer tray presets (emulated pads)");
     println!();
     println!("With no options, starts the system tray app.");
 }

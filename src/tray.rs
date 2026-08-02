@@ -3,15 +3,18 @@ use crate::app_log;
 use crate::autostart;
 use crate::battery::{self, ControllerStatus};
 use crate::color::color_for_battery_percent;
+#[cfg(feature = "dev-emulate")]
+use crate::emulate::{self, Preset};
 use crate::icon;
 use crate::lightbar::{
     self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
 };
+use crate::notify::NotifyTracker;
+use crate::prefs::Prefs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-#[cfg(windows)]
 use tray_icon::menu::CheckMenuItem;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -32,6 +35,8 @@ const UNREAD_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const QUIT_ID: &str = "quit";
 #[cfg(windows)]
 const AUTOSTART_ID: &str = "autostart";
+const NOTIFY_LOW_ID: &str = "notify_low";
+const NOTIFY_CHARGED_ID: &str = "notify_charged";
 const IDENTIFY_ID_PREFIX: &str = "identify:";
 
 #[derive(Debug)]
@@ -56,9 +61,38 @@ struct TrayApp {
     low_battery: Arc<Mutex<Vec<(String, u8)>>>,
     last_battery_poll: Instant,
     proxy: EventLoopProxy<UserEvent>,
+    prefs: Prefs,
+    notify: NotifyTracker,
+    #[cfg(feature = "dev-emulate")]
+    dev_mode: bool,
+    #[cfg(feature = "dev-emulate")]
+    emulating: bool,
 }
 
+#[cfg(feature = "dev-emulate")]
+pub fn run(dev_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+    run_inner(dev_mode)
+}
+
+#[cfg(not(feature = "dev-emulate"))]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    run_inner()
+}
+
+#[cfg(feature = "dev-emulate")]
+fn run_inner(dev_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
+    run_app(dev_mode)
+}
+
+#[cfg(not(feature = "dev-emulate"))]
+fn run_inner() -> Result<(), Box<dyn std::error::Error>> {
+    run_app()
+}
+
+fn run_app(
+    #[cfg(feature = "dev-emulate")]
+    dev_mode: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
 
     let proxy = event_loop.create_proxy();
@@ -91,6 +125,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         low_battery,
         last_battery_poll: Instant::now(),
         proxy: event_loop.create_proxy(),
+        prefs: Prefs::load(),
+        notify: NotifyTracker::new(),
+        #[cfg(feature = "dev-emulate")]
+        dev_mode,
+        #[cfg(feature = "dev-emulate")]
+        emulating: false,
     };
 
     event_loop.run_app(&mut app)?;
@@ -122,6 +162,10 @@ fn start_low_battery_pulse_thread(
                     break;
                 }
 
+                if is_emulated_serial(&serial) {
+                    continue;
+                }
+
                 if let Err(err) = lightbar::apply_lightbar_rgb(&serial, LOW_BATTERY_ORANGE) {
                     app_log::warn(format!("low-battery pulse failed for {serial}: {err}"));
                 }
@@ -138,6 +182,18 @@ fn start_low_battery_pulse_thread(
             }
         }
     });
+}
+
+fn is_emulated_serial(serial: &str) -> bool {
+    #[cfg(feature = "dev-emulate")]
+    {
+        emulate::is_emulated(serial)
+    }
+    #[cfg(not(feature = "dev-emulate"))]
+    {
+        let _ = serial;
+        false
+    }
 }
 
 fn controllers_equivalent(a: &[ControllerStatus], b: &[ControllerStatus]) -> bool {
@@ -158,7 +214,7 @@ impl TrayApp {
         let list: Vec<(String, u8)> = self
             .controllers
             .iter()
-            .filter(|c| c.is_low_battery())
+            .filter(|c| c.is_low_battery() && !is_emulated_serial(&c.serial))
             .map(|c| (c.serial.clone(), c.percent))
             .collect();
         if let Ok(mut guard) = self.low_battery.lock() {
@@ -166,7 +222,23 @@ impl TrayApp {
         }
     }
 
+    fn apply_controllers(&mut self, controllers: Vec<ControllerStatus>) {
+        if controllers_equivalent(&self.controllers, &controllers) {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.controllers, controllers);
+        self.notify
+            .evaluate(&previous, &self.controllers, &self.prefs);
+        self.sync_low_battery();
+        self.apply_tray();
+    }
+
     fn on_tick(&mut self) {
+        #[cfg(feature = "dev-emulate")]
+        if self.emulating {
+            return;
+        }
+
         if self.identifying.load(Ordering::SeqCst) || self.refreshing.load(Ordering::SeqCst) {
             return;
         }
@@ -186,9 +258,7 @@ impl TrayApp {
         // often disappears from enumeration well before the next battery poll.
         if membership_changed && self.last_discovered.is_empty() {
             if !self.controllers.is_empty() {
-                self.controllers.clear();
-                self.sync_low_battery();
-                self.apply_tray();
+                self.apply_controllers(Vec::new());
             }
             self.last_battery_poll = Instant::now();
             return;
@@ -209,6 +279,11 @@ impl TrayApp {
     }
 
     fn request_refresh(&mut self) {
+        #[cfg(feature = "dev-emulate")]
+        if self.emulating {
+            return;
+        }
+
         if self.identifying.load(Ordering::SeqCst) {
             return;
         }
@@ -231,27 +306,25 @@ impl TrayApp {
         self.refreshing.store(false, Ordering::SeqCst);
         self.last_battery_poll = Instant::now();
 
+        #[cfg(feature = "dev-emulate")]
+        if self.emulating {
+            return;
+        }
+
         match result {
-            Ok(controllers) => {
-                if controllers_equivalent(&self.controllers, &controllers) {
-                    return;
-                }
-                self.controllers = controllers;
-                self.sync_low_battery();
-                self.apply_tray();
-            }
+            Ok(controllers) => self.apply_controllers(controllers),
             Err(err) => app_log::warn(format!("refresh failed: {err}")),
         }
     }
 
     fn apply_tray(&mut self) {
+        let icon = icon::icon_for_controllers(&self.controllers);
+        let tooltip = icon::tooltip_for_controllers(&self.controllers);
+        let menu = self.build_menu();
+
         let Some(tray) = self.tray_icon.as_mut() else {
             return;
         };
-
-        let icon = icon::icon_for_controllers(&self.controllers);
-        let tooltip = icon::tooltip_for_controllers(&self.controllers);
-        let menu = build_menu(&self.controllers);
 
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_tooltip(Some(tooltip));
@@ -268,7 +341,7 @@ impl TrayApp {
 
         let icon = icon::icon_for_controllers(&self.controllers);
         let tooltip = icon::tooltip_for_controllers(&self.controllers);
-        let menu = build_menu(&self.controllers);
+        let menu = self.build_menu();
 
         match TrayIconBuilder::new()
             .with_tooltip(tooltip)
@@ -284,6 +357,11 @@ impl TrayApp {
     }
 
     fn identify(&self, serial: &str) {
+        if is_emulated_serial(serial) {
+            app_log::info(format!("identify skipped for emulated controller {serial}"));
+            return;
+        }
+
         let Some(controller) = self.controllers.iter().find(|c| c.serial == serial) else {
             return;
         };
@@ -316,41 +394,104 @@ impl TrayApp {
         }
         self.apply_tray();
     }
-}
 
-fn build_menu(controllers: &[ControllerStatus]) -> Menu {
-    let menu = Menu::new();
+    fn toggle_notify_low(&mut self) {
+        self.prefs.notify_low = !self.prefs.notify_low;
+        self.prefs.save();
+        self.apply_tray();
+    }
 
-    if controllers.is_empty() {
-        let empty = MenuItem::new("No DualSense connected", false, None);
-        let _ = menu.append(&empty);
-    } else {
-        let hint = MenuItem::new("Click a controller to identify", false, None);
-        let _ = menu.append(&hint);
+    fn toggle_notify_charged(&mut self) {
+        self.prefs.notify_charged = !self.prefs.notify_charged;
+        self.prefs.save();
+        self.apply_tray();
+    }
+
+    #[cfg(feature = "dev-emulate")]
+    fn apply_dev_preset(&mut self, preset: Preset) {
+        if preset == Preset::Clear {
+            self.emulating = false;
+            self.apply_controllers(Vec::new());
+            self.last_battery_poll = Instant::now();
+            self.request_refresh();
+            return;
+        }
+
+        let next = emulate::apply_preset(preset, &self.controllers);
+        self.emulating = true;
+        self.apply_controllers(next);
+    }
+
+    fn build_menu(&self) -> Menu {
+        let menu = Menu::new();
+
+        if self.controllers.is_empty() {
+            let empty = MenuItem::new("No DualSense connected", false, None);
+            let _ = menu.append(&empty);
+        } else {
+            let hint = MenuItem::new("Click a controller to identify", false, None);
+            let _ = menu.append(&hint);
+            let _ = menu.append(&PredefinedMenuItem::separator());
+
+            for controller in &self.controllers {
+                let id = format!("{IDENTIFY_ID_PREFIX}{}", controller.serial);
+                let item = MenuItem::with_id(id, controller.menu_label(), true, None);
+                let _ = menu.append(&item);
+            }
+        }
+
         let _ = menu.append(&PredefinedMenuItem::separator());
 
-        for controller in controllers {
-            let id = format!("{IDENTIFY_ID_PREFIX}{}", controller.serial);
-            let item = MenuItem::with_id(id, controller.menu_label(), true, None);
-            let _ = menu.append(&item);
-        }
-    }
-
-    let _ = menu.append(&PredefinedMenuItem::separator());
-    #[cfg(windows)]
-    {
-        let autostart = CheckMenuItem::with_id(
-            AUTOSTART_ID,
-            "Start with Windows",
+        let notify_low = CheckMenuItem::with_id(
+            NOTIFY_LOW_ID,
+            "Notify when low",
             true,
-            autostart::is_enabled(),
+            self.prefs.notify_low,
             None,
         );
-        let _ = menu.append(&autostart);
+        let _ = menu.append(&notify_low);
+
+        let notify_charged = CheckMenuItem::with_id(
+            NOTIFY_CHARGED_ID,
+            "Notify when charged",
+            true,
+            self.prefs.notify_charged,
+            None,
+        );
+        let _ = menu.append(&notify_charged);
+
+        #[cfg(windows)]
+        {
+            let autostart = CheckMenuItem::with_id(
+                AUTOSTART_ID,
+                "Start with Windows",
+                true,
+                autostart::is_enabled(),
+                None,
+            );
+            let _ = menu.append(&autostart);
+        }
+
+        #[cfg(feature = "dev-emulate")]
+        if self.dev_mode {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+            let label = if self.emulating {
+                "Developer (HID paused)"
+            } else {
+                "Developer"
+            };
+            let header = MenuItem::new(label, false, None);
+            let _ = menu.append(&header);
+            for preset in Preset::ALL {
+                let item = MenuItem::with_id(preset.menu_id(), preset.menu_label(), true, None);
+                let _ = menu.append(&item);
+            }
+        }
+
+        let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
+        let _ = menu.append(&quit);
+        menu
     }
-    let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
-    let _ = menu.append(&quit);
-    menu
 }
 
 fn parse_identify_id(id: &str) -> Option<&str> {
@@ -384,12 +525,22 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 if id == QUIT_ID {
                     self.tray_icon.take();
                     event_loop.exit();
+                } else if id == NOTIFY_LOW_ID {
+                    self.toggle_notify_low();
+                } else if id == NOTIFY_CHARGED_ID {
+                    self.toggle_notify_charged();
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 }
                 #[cfg(windows)]
                 if id == AUTOSTART_ID {
                     self.toggle_autostart();
+                }
+                #[cfg(feature = "dev-emulate")]
+                if self.dev_mode {
+                    if let Some(preset) = Preset::from_menu_id(id) {
+                        self.apply_dev_preset(preset);
+                    }
                 }
             }
         }

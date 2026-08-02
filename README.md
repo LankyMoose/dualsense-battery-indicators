@@ -9,6 +9,7 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
 - Menu lists each controller (battery % + status); click one to **identify** (white flash ×5)
+- Desktop notifications when a pad hits **low battery** (≤5% discharging) or **finishes charging** (tray toggles; on by default)
 - **Start with Windows** check item toggles user Startup autostart (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar hue slides **blue → purple → red** as battery drops (updated about once a minute)
@@ -26,6 +27,8 @@ cargo build --release
 
 Binary: `target/release/dualsense-battery-indicators` (`.exe` on Windows).
 
+Release builds do **not** include the developer emulator (`dev-emulate` is off by default).
+
 To rename the app later, change `package.name` in `Cargo.toml` and `DISPLAY_NAME` in `src/app_meta.rs` (runtime paths follow the package name).
 
 ## Run
@@ -36,6 +39,16 @@ cargo run --release
 ./target/release/dualsense-battery-indicators
 ```
 
+### Developer emulator (optional)
+
+For testing notifications without real hardware, build with the `dev-emulate` feature and pass `--dev`:
+
+```bash
+cargo run --features dev-emulate -- --dev
+```
+
+That unlocks a **Developer** tray section with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
+
 ### CLI
 
 | Flag | Description |
@@ -44,12 +57,15 @@ cargo run --release
 | `-V` / `--version` | Print version and exit |
 | `--install-autostart` | Windows: add a Startup entry for this exe |
 | `--uninstall-autostart` | Windows: remove that Startup entry |
+| `--list-controllers` | Print connected DualSense pads and exit |
+| `--dev` | Enable Developer tray presets (only when built with `--features dev-emulate`) |
 
 ## Windows notes
 
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
+- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles)
 - Autostart writes `dualsense-battery-indicators.cmd` into the user Startup folder (also toggleable from the tray menu).
 
 ## Platform support
@@ -65,10 +81,12 @@ cargo run --release
 - GTK 3 development libraries (for tray)
 - `libhidapi` / pkg-config as required by the `hidapi` crate
 - Permission to open the DualSense HID device (udev rule or group membership)
+- A desktop notification daemon (e.g. the usual DE notification service) for toasts
 
 ### macOS
 
 - Grant Input Monitoring / accessibility only if macOS prompts for HID access
+- macOS may prompt once for notification permission
 - Autostart is not automated; use Login Items manually if desired
 
 ## Battery accuracy
@@ -94,8 +112,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

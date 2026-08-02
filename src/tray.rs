@@ -90,8 +90,7 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_app(
-    #[cfg(feature = "dev-emulate")]
-    dev_mode: bool,
+    #[cfg(feature = "dev-emulate")] dev_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
 

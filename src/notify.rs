@@ -50,10 +50,8 @@ impl NotifyTracker {
         next: &'a [ControllerStatus],
         prefs: &Prefs,
     ) -> Vec<(&'a ControllerStatus, NotifyKind)> {
-        let prev_by_serial: HashMap<&str, &ControllerStatus> = previous
-            .iter()
-            .map(|c| (c.serial.as_str(), c))
-            .collect();
+        let prev_by_serial: HashMap<&str, &ControllerStatus> =
+            previous.iter().map(|c| (c.serial.as_str(), c)).collect();
 
         self.by_serial
             .retain(|serial, _| next.iter().any(|c| c.serial == *serial));
@@ -61,10 +59,7 @@ impl NotifyTracker {
         let mut events = Vec::new();
 
         for controller in next {
-            let flags = self
-                .by_serial
-                .entry(controller.serial.clone())
-                .or_default();
+            let flags = self.by_serial.entry(controller.serial.clone()).or_default();
             let prev = prev_by_serial.get(controller.serial.as_str()).copied();
 
             let was_low = prev.is_some_and(|p| p.is_low_battery());

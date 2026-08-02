@@ -1,6 +1,6 @@
 //! Developer-only controller presets (feature `dev-emulate`).
 
-use crate::battery::{ControllerStatus, PowerState, LOW_BATTERY_PERCENT};
+use crate::battery::{ControllerStatus, LOW_BATTERY_PERCENT, PowerState};
 
 pub const SERIAL_PREFIX: &str = "emu-";
 

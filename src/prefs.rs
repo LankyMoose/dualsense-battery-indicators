@@ -2,6 +2,7 @@
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
+use crate::color::BatterySpectrum;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -12,6 +13,8 @@ pub struct Prefs {
     pub notify_low: bool,
     #[serde(default = "default_true")]
     pub notify_charged: bool,
+    #[serde(default)]
+    pub spectrum: BatterySpectrum,
 }
 
 fn default_true() -> bool {
@@ -23,6 +26,7 @@ impl Default for Prefs {
         Self {
             notify_low: true,
             notify_charged: true,
+            spectrum: BatterySpectrum::DEFAULT,
         }
     }
 }

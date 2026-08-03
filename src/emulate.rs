@@ -46,17 +46,7 @@ impl Preset {
     }
 
     pub fn from_menu_id(id: &str) -> Option<Self> {
-        [
-            Self::Discharging50,
-            Self::LowBattery,
-            Self::Charging,
-            Self::FullyCharged,
-            Self::ChargeCompleteStep,
-            Self::TwoPads,
-            Self::Clear,
-        ]
-        .into_iter()
-        .find(|p| p.menu_id() == id)
+        Self::ALL.iter().copied().find(|p| p.menu_id() == id)
     }
 
     pub const ALL: &'static [Preset] = &[

@@ -1,6 +1,6 @@
 [package]
 name = "dualsense-battery-indicators"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.85"
 description = "DualSense Battery Indicators — show DualSense controller battery levels in the system tray"
@@ -19,11 +19,14 @@ dev-emulate = []
 
 [dependencies]
 crc32fast = "1.5.0"
+font-kit = "0.14"
+fontdue = "0.9"
 hidapi = "2.6.6"
 notify-rust = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 single-instance = "0.3.3"
+softbuffer = "0.4"
 
 [build-dependencies]
 ico = "0.4"

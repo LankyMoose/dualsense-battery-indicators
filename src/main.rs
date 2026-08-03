@@ -5,6 +5,7 @@ mod app_meta;
 mod autostart;
 mod battery;
 mod color;
+mod configure_ui;
 #[cfg(feature = "dev-emulate")]
 mod emulate;
 mod icon;
@@ -123,7 +124,7 @@ fn print_help() {
     println!("      --uninstall-autostart  Windows: remove that Startup entry");
     println!("      --list-controllers     Print connected DualSense pads and exit");
     #[cfg(feature = "dev-emulate")]
-    println!("      --dev                  Enable Developer tray presets (emulated pads)");
+    println!("      --dev                  Enable Developer menu in Configure (emulated pads)");
     println!();
     println!("With no options, starts the system tray app.");
 }

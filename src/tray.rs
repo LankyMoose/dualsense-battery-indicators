@@ -2,7 +2,8 @@ use crate::app_log;
 #[cfg(windows)]
 use crate::autostart;
 use crate::battery::{self, ControllerStatus};
-use crate::color::color_for_battery_percent;
+use crate::color::{self, BatterySpectrum, color_for_battery_percent};
+use crate::configure_ui::{self, ConfigureAction, ConfigureSettings, ConfigureWindow};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::{self, Preset};
 use crate::icon;
@@ -15,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::CheckMenuItem;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
@@ -33,10 +33,7 @@ const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
 /// When HID lists pads but battery reads keep failing, retry sooner than BATTERY_INTERVAL.
 const UNREAD_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const QUIT_ID: &str = "quit";
-#[cfg(windows)]
-const AUTOSTART_ID: &str = "autostart";
-const NOTIFY_LOW_ID: &str = "notify_low";
-const NOTIFY_CHARGED_ID: &str = "notify_charged";
+const CONFIGURE_ID: &str = "configure";
 const IDENTIFY_ID_PREFIX: &str = "identify:";
 
 #[derive(Debug)]
@@ -63,6 +60,7 @@ struct TrayApp {
     proxy: EventLoopProxy<UserEvent>,
     prefs: Prefs,
     notify: NotifyTracker,
+    configure: Option<ConfigureWindow>,
     #[cfg(feature = "dev-emulate")]
     dev_mode: bool,
     #[cfg(feature = "dev-emulate")]
@@ -115,6 +113,9 @@ fn run_app(
     let low_battery = Arc::new(Mutex::new(Vec::new()));
     start_low_battery_pulse_thread(Arc::clone(&identifying), Arc::clone(&low_battery));
 
+    let prefs = Prefs::load();
+    color::set_active_spectrum(prefs.spectrum);
+
     let mut app = TrayApp {
         tray_icon: None,
         controllers: Vec::new(),
@@ -124,8 +125,9 @@ fn run_app(
         low_battery,
         last_battery_poll: Instant::now(),
         proxy: event_loop.create_proxy(),
-        prefs: Prefs::load(),
+        prefs,
         notify: NotifyTracker::new(),
+        configure: None,
         #[cfg(feature = "dev-emulate")]
         dev_mode,
         #[cfg(feature = "dev-emulate")]
@@ -209,6 +211,32 @@ fn controllers_equivalent(a: &[ControllerStatus], b: &[ControllerStatus]) -> boo
 }
 
 impl TrayApp {
+    fn configure_settings(&self) -> ConfigureSettings {
+        ConfigureSettings {
+            notify_low: self.prefs.notify_low,
+            notify_charged: self.prefs.notify_charged,
+            #[cfg(windows)]
+            autostart: autostart::is_enabled(),
+            show_developer: {
+                #[cfg(feature = "dev-emulate")]
+                {
+                    self.dev_mode
+                }
+                #[cfg(not(feature = "dev-emulate"))]
+                {
+                    false
+                }
+            },
+        }
+    }
+
+    fn sync_configure_settings(&mut self) {
+        let settings = self.configure_settings();
+        if let Some(window) = self.configure.as_mut() {
+            window.sync_settings(settings);
+        }
+    }
+
     fn sync_low_battery(&self) {
         let list: Vec<(String, u8)> = self
             .controllers
@@ -386,24 +414,84 @@ impl TrayApp {
     }
 
     #[cfg(windows)]
-    fn toggle_autostart(&mut self) {
-        let enable = !autostart::is_enabled();
+    fn on_autostart_menu(&mut self) {
+        // muda toggles the checkmark before delivering the event; mirror that state.
+        let enable = self
+            .configure
+            .as_ref()
+            .map(|w| w.menu_bar().autostart.is_checked())
+            .unwrap_or_else(|| !autostart::is_enabled());
         if let Err(err) = autostart::set_enabled(enable) {
             app_log::error(format!("autostart toggle failed: {err}"));
+            self.sync_configure_settings();
+            return;
         }
-        self.apply_tray();
+        self.sync_configure_settings();
     }
 
-    fn toggle_notify_low(&mut self) {
-        self.prefs.notify_low = !self.prefs.notify_low;
+    fn on_notify_low_menu(&mut self) {
+        // muda toggles the checkmark before delivering the event; mirror that state.
+        self.prefs.notify_low = self
+            .configure
+            .as_ref()
+            .map(|w| w.menu_bar().notify_low.is_checked())
+            .unwrap_or(!self.prefs.notify_low);
         self.prefs.save();
-        self.apply_tray();
     }
 
-    fn toggle_notify_charged(&mut self) {
-        self.prefs.notify_charged = !self.prefs.notify_charged;
+    fn on_notify_charged_menu(&mut self) {
+        self.prefs.notify_charged = self
+            .configure
+            .as_ref()
+            .map(|w| w.menu_bar().notify_charged.is_checked())
+            .unwrap_or(!self.prefs.notify_charged);
         self.prefs.save();
-        self.apply_tray();
+    }
+
+    fn open_configure(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.configure.as_ref() {
+            window.focus();
+            return;
+        }
+
+        match ConfigureWindow::open(
+            event_loop,
+            event_loop.owned_display_handle(),
+            self.prefs.spectrum,
+            self.configure_settings(),
+        ) {
+            Ok(window) => self.configure = Some(window),
+            Err(err) => app_log::error(format!("failed to open configure window: {err}")),
+        }
+    }
+
+    fn apply_spectrum(&mut self, spectrum: BatterySpectrum) {
+        self.prefs.spectrum = spectrum;
+        self.prefs.save();
+        color::set_active_spectrum(spectrum);
+
+        for controller in &self.controllers {
+            if is_emulated_serial(&controller.serial) {
+                continue;
+            }
+            let color = spectrum.color_at_percent(controller.percent);
+            if let Err(err) = lightbar::apply_lightbar_rgb(&controller.serial, color) {
+                app_log::warn(format!(
+                    "failed to apply spectrum color for {}: {err}",
+                    controller.serial
+                ));
+            }
+        }
+    }
+
+    fn on_configure_action(&mut self, action: ConfigureAction) {
+        match action {
+            ConfigureAction::None => {}
+            ConfigureAction::ApplySpectrum(spectrum) => self.apply_spectrum(spectrum),
+            ConfigureAction::Closed => {
+                self.configure = None;
+            }
+        }
     }
 
     #[cfg(feature = "dev-emulate")]
@@ -441,51 +529,8 @@ impl TrayApp {
 
         let _ = menu.append(&PredefinedMenuItem::separator());
 
-        let notify_low = CheckMenuItem::with_id(
-            NOTIFY_LOW_ID,
-            "Notify when low",
-            true,
-            self.prefs.notify_low,
-            None,
-        );
-        let _ = menu.append(&notify_low);
-
-        let notify_charged = CheckMenuItem::with_id(
-            NOTIFY_CHARGED_ID,
-            "Notify when charged",
-            true,
-            self.prefs.notify_charged,
-            None,
-        );
-        let _ = menu.append(&notify_charged);
-
-        #[cfg(windows)]
-        {
-            let autostart = CheckMenuItem::with_id(
-                AUTOSTART_ID,
-                "Start with Windows",
-                true,
-                autostart::is_enabled(),
-                None,
-            );
-            let _ = menu.append(&autostart);
-        }
-
-        #[cfg(feature = "dev-emulate")]
-        if self.dev_mode {
-            let _ = menu.append(&PredefinedMenuItem::separator());
-            let label = if self.emulating {
-                "Developer (HID paused)"
-            } else {
-                "Developer"
-            };
-            let header = MenuItem::new(label, false, None);
-            let _ = menu.append(&header);
-            for preset in Preset::ALL {
-                let item = MenuItem::with_id(preset.menu_id(), preset.menu_label(), true, None);
-                let _ = menu.append(&item);
-            }
-        }
+        let configure = MenuItem::with_id(CONFIGURE_ID, "Configure", true, None);
+        let _ = menu.append(&configure);
 
         let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
         let _ = menu.append(&quit);
@@ -503,9 +548,19 @@ impl ApplicationHandler<UserEvent> for TrayApp {
     fn window_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        _event: winit::event::WindowEvent,
+        window_id: WindowId,
+        event: winit::event::WindowEvent,
     ) {
+        let action = {
+            let Some(window) = self.configure.as_mut() else {
+                return;
+            };
+            if window.window_id() != window_id {
+                return;
+            }
+            window.handle(&event)
+        };
+        self.on_configure_action(action);
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -524,16 +579,18 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 if id == QUIT_ID {
                     self.tray_icon.take();
                     event_loop.exit();
-                } else if id == NOTIFY_LOW_ID {
-                    self.toggle_notify_low();
-                } else if id == NOTIFY_CHARGED_ID {
-                    self.toggle_notify_charged();
+                } else if id == CONFIGURE_ID {
+                    self.open_configure(event_loop);
+                } else if id == configure_ui::NOTIFY_LOW_ID {
+                    self.on_notify_low_menu();
+                } else if id == configure_ui::NOTIFY_CHARGED_ID {
+                    self.on_notify_charged_menu();
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 }
                 #[cfg(windows)]
-                if id == AUTOSTART_ID {
-                    self.toggle_autostart();
+                if id == configure_ui::AUTOSTART_ID {
+                    self.on_autostart_menu();
                 }
                 #[cfg(feature = "dev-emulate")]
                 if self.dev_mode {

@@ -144,6 +144,7 @@ mod tests {
         Prefs {
             notify_low,
             notify_charged,
+            spectrum: Default::default(),
         }
     }
 

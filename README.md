@@ -9,10 +9,10 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
 - Menu lists each controller (battery % + status); click one to **identify** (white flash ×5)
-- Desktop notifications when a pad hits **low battery** (≤5% discharging) or **finishes charging** (tray toggles; on by default)
-- **Start with Windows** check item toggles user Startup autostart (Windows)
+- Desktop notifications when a pad hits **low battery** (≤5% discharging) or **finishes charging** (native **Configure → Settings** menu; on by default)
+- **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
-- Lightbar hue slides **blue → purple → red** as battery drops (updated about once a minute)
+- Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**
 - Single-instance (second launch exits quietly)
 - Logs to a file (see Troubleshooting)
@@ -47,7 +47,7 @@ For testing notifications without real hardware, build with the `dev-emulate` fe
 cargo run --features dev-emulate -- --dev
 ```
 
-That unlocks a **Developer** tray section with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
+That unlocks a **Developer** menu in the **Configure** window with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
 
 ### CLI
 
@@ -58,15 +58,15 @@ That unlocks a **Developer** tray section with emulated controller presets (low 
 | `--install-autostart` | Windows: add a Startup entry for this exe |
 | `--uninstall-autostart` | Windows: remove that Startup entry |
 | `--list-controllers` | Print connected DualSense pads and exit |
-| `--dev` | Enable Developer tray presets (only when built with `--features dev-emulate`) |
+| `--dev` | Enable Developer menu in Configure (only when built with `--features dev-emulate`) |
 
 ## Windows notes
 
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
-- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles)
-- Autostart writes `dualsense-battery-indicators.cmd` into the user Startup folder (also toggleable from the tray menu).
+- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
+- Autostart writes `dualsense-battery-indicators.cmd` into the user Startup folder (also toggleable from **Configure → Settings**).
 
 ## Platform support
 

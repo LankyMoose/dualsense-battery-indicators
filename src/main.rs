@@ -72,6 +72,11 @@ fn main() -> ExitCode {
         return list_controllers_cli();
     }
 
+    if let Some(idx) = args.iter().position(|a| a == "--set-lightbar") {
+        attach_console_for_cli();
+        return set_lightbar_cli(&args[idx + 1..]);
+    }
+
     #[cfg(feature = "dev-emulate")]
     let (dev_mode, args) = {
         let dev_mode = args.iter().any(|a| a == "--dev");
@@ -123,6 +128,9 @@ fn print_help() {
     println!("      --install-autostart    Windows: add a Startup entry for this exe");
     println!("      --uninstall-autostart  Windows: remove that Startup entry");
     println!("      --list-controllers     Print connected DualSense pads and exit");
+    println!(
+        "      --set-lightbar R G B   Set lightbar RGB (0-255) on all connected pads and exit"
+    );
     #[cfg(feature = "dev-emulate")]
     println!("      --dev                  Enable Developer menu in Configure (emulated pads)");
     println!();
@@ -167,6 +175,46 @@ fn list_controllers_cli() -> ExitCode {
                     );
                 }
             }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn set_lightbar_cli(rgb_args: &[String]) -> ExitCode {
+    if rgb_args.len() < 3 {
+        eprintln!("error: --set-lightbar requires R G B (0-255)");
+        return ExitCode::FAILURE;
+    }
+
+    let parse = |s: &str| -> Result<u8, String> {
+        s.parse::<u8>()
+            .map_err(|_| format!("invalid RGB component '{s}' (expected 0-255)"))
+    };
+
+    let (r, g, b) = match (
+        parse(&rgb_args[0]),
+        parse(&rgb_args[1]),
+        parse(&rgb_args[2]),
+    ) {
+        (Ok(r), Ok(g), Ok(b)) => (r, g, b),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let color = color::Rgb::new(r, g, b);
+    match lightbar::apply_lightbar_all(color) {
+        Ok(0) => {
+            eprintln!("error: no DualSense controllers found");
+            ExitCode::FAILURE
+        }
+        Ok(n) => {
+            println!("Set lightbar to {} on {n} controller(s).", color.to_hex());
             ExitCode::SUCCESS
         }
         Err(err) => {

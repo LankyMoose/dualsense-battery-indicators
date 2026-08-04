@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-05
+
+### Fixed
+
+- Lightbar color and identify now work on Bluetooth without Steam: claim control with a dedicated `LIGHT_OUT` setup report, then set RGB in a **second** report (Linux `hid-playstation` sequence). Combining setup+RGB in one packet left the bar dark or stuck on the default blue.
+
+### Added
+
+- `--set-lightbar R G B` CLI flag to push a color to all connected pads (useful for debugging).
+
 ## [0.1.5] - 2026-08-03
 
 ### Added
@@ -62,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.6]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.2...v0.1.3

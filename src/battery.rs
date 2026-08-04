@@ -267,6 +267,8 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
         status.index = i + 1;
     }
 
+    lightbar::sync_lightbar_claims(statuses.iter().map(|s| s.serial.as_str()));
+
     // Apply lightbar once per physical pad (after USB/BT collapse).
     with_lightbar_lock(|| {
         for status in &statuses {

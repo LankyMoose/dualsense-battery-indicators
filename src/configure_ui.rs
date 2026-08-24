@@ -60,6 +60,7 @@ const BTN_INK_HOT: u32 = rgb_u32(255, 255, 255);
 
 pub const NOTIFY_LOW_ID: &str = "cfg:notify_low";
 pub const NOTIFY_CHARGED_ID: &str = "cfg:notify_charged";
+pub const NOTIFY_CONNECT_ID: &str = "cfg:notify_connect";
 #[cfg(windows)]
 pub const AUTOSTART_ID: &str = "cfg:autostart";
 
@@ -67,6 +68,7 @@ pub const AUTOSTART_ID: &str = "cfg:autostart";
 pub struct ConfigureSettings {
     pub notify_low: bool,
     pub notify_charged: bool,
+    pub notify_connect: bool,
     #[cfg(windows)]
     pub autostart: bool,
     pub show_developer: bool,
@@ -77,6 +79,7 @@ pub struct ConfigureMenuBar {
     pub menu: Menu,
     pub notify_low: CheckMenuItem,
     pub notify_charged: CheckMenuItem,
+    pub notify_connect: CheckMenuItem,
     #[cfg(windows)]
     pub autostart: CheckMenuItem,
 }
@@ -86,6 +89,13 @@ impl ConfigureMenuBar {
         let menu = Menu::new();
 
         let settings_menu = Submenu::new("Settings", true);
+        let notify_connect = CheckMenuItem::with_id(
+            NOTIFY_CONNECT_ID,
+            "Notify on connect",
+            true,
+            settings.notify_connect,
+            None,
+        );
         let notify_low = CheckMenuItem::with_id(
             NOTIFY_LOW_ID,
             "Notify when low",
@@ -100,6 +110,9 @@ impl ConfigureMenuBar {
             settings.notify_charged,
             None,
         );
+        settings_menu
+            .append(&notify_connect)
+            .map_err(|e| format!("menu append: {e}"))?;
         settings_menu
             .append(&notify_low)
             .map_err(|e| format!("menu append: {e}"))?;
@@ -144,6 +157,7 @@ impl ConfigureMenuBar {
             menu,
             notify_low,
             notify_charged,
+            notify_connect,
             #[cfg(windows)]
             autostart,
         })
@@ -152,6 +166,7 @@ impl ConfigureMenuBar {
     pub fn sync_checks(&self, settings: ConfigureSettings) {
         self.notify_low.set_checked(settings.notify_low);
         self.notify_charged.set_checked(settings.notify_charged);
+        self.notify_connect.set_checked(settings.notify_connect);
         #[cfg(windows)]
         self.autostart.set_checked(settings.autostart);
     }

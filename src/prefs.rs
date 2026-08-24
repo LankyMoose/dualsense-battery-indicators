@@ -13,6 +13,8 @@ pub struct Prefs {
     pub notify_low: bool,
     #[serde(default = "default_true")]
     pub notify_charged: bool,
+    #[serde(default = "default_true")]
+    pub notify_connect: bool,
     #[serde(default)]
     pub spectrum: BatterySpectrum,
 }
@@ -26,6 +28,7 @@ impl Default for Prefs {
         Self {
             notify_low: true,
             notify_charged: true,
+            notify_connect: true,
             spectrum: BatterySpectrum::DEFAULT,
         }
     }

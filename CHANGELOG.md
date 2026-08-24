@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-25
+
+### Added
+
+- Desktop notification when a DualSense connects, including current battery percent. Toggle via Configure → Settings → **Notify on connect** (on by default; stored in `prefs.json`).
+
 ## [0.1.7] - 2026-08-25
 
 ### Fixed
@@ -78,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.8]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.4...v0.1.5

@@ -215,6 +215,7 @@ impl TrayApp {
         ConfigureSettings {
             notify_low: self.prefs.notify_low,
             notify_charged: self.prefs.notify_charged,
+            notify_connect: self.prefs.notify_connect,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
             show_developer: {
@@ -448,6 +449,15 @@ impl TrayApp {
         self.prefs.save();
     }
 
+    fn on_notify_connect_menu(&mut self) {
+        self.prefs.notify_connect = self
+            .configure
+            .as_ref()
+            .map(|w| w.menu_bar().notify_connect.is_checked())
+            .unwrap_or(!self.prefs.notify_connect);
+        self.prefs.save();
+    }
+
     fn open_configure(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = self.configure.as_ref() {
             window.focus();
@@ -585,6 +595,8 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                     self.on_notify_low_menu();
                 } else if id == configure_ui::NOTIFY_CHARGED_ID {
                     self.on_notify_charged_menu();
+                } else if id == configure_ui::NOTIFY_CONNECT_ID {
+                    self.on_notify_connect_menu();
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 }

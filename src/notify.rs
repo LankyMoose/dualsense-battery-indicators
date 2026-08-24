@@ -1,4 +1,4 @@
-//! Desktop notifications for low battery and charge-complete edges.
+//! Desktop notifications for connect, low battery, and charge-complete edges.
 
 use crate::app_log;
 use crate::app_meta::DISPLAY_NAME;
@@ -20,6 +20,7 @@ pub struct NotifyTracker {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NotifyKind {
+    Connect,
     Low,
     Charged,
 }
@@ -29,7 +30,7 @@ impl NotifyTracker {
         Self::default()
     }
 
-    /// Fire toasts for low-battery / charge-complete transitions.
+    /// Fire toasts for connect / low-battery / charge-complete transitions.
     pub fn evaluate(
         &mut self,
         previous: &[ControllerStatus],
@@ -38,6 +39,7 @@ impl NotifyTracker {
     ) {
         for (controller, kind) in self.collect_events(previous, next, prefs) {
             match kind {
+                NotifyKind::Connect => show_connect(controller),
                 NotifyKind::Low => show_low(controller),
                 NotifyKind::Charged => show_charged(controller),
             }
@@ -61,6 +63,10 @@ impl NotifyTracker {
         for controller in next {
             let flags = self.by_serial.entry(controller.serial.clone()).or_default();
             let prev = prev_by_serial.get(controller.serial.as_str()).copied();
+
+            if prev.is_none() && prefs.notify_connect {
+                events.push((controller, NotifyKind::Connect));
+            }
 
             let was_low = prev.is_some_and(|p| p.is_low_battery());
             if controller.is_low_battery() {
@@ -90,6 +96,14 @@ impl NotifyTracker {
 
         events
     }
+}
+
+fn show_connect(controller: &ControllerStatus) {
+    let body = format!(
+        "{} ({}) connected — {}%",
+        controller.product, controller.connection, controller.percent
+    );
+    show(DISPLAY_NAME, &body);
 }
 
 fn show_low(controller: &ControllerStatus) {
@@ -140,18 +154,69 @@ mod tests {
         }
     }
 
-    fn prefs(notify_low: bool, notify_charged: bool) -> Prefs {
+    fn prefs(notify_low: bool, notify_charged: bool, notify_connect: bool) -> Prefs {
         Prefs {
             notify_low,
             notify_charged,
+            notify_connect,
             spectrum: Default::default(),
         }
     }
 
     #[test]
+    fn connects_notifies_with_percent() {
+        let mut tracker = NotifyTracker::new();
+        let p = prefs(true, true, true);
+        let connected = vec![pad("a", 65, PowerState::Discharging, "Bluetooth")];
+
+        let events = tracker.collect_events(&[], &connected, &p);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, NotifyKind::Connect);
+        assert_eq!(events[0].0.percent, 65);
+
+        assert!(
+            tracker
+                .collect_events(&connected, &connected, &p)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reconnect_after_disconnect_notifies_again() {
+        let mut tracker = NotifyTracker::new();
+        let p = prefs(true, true, true);
+        let connected = vec![pad("a", 40, PowerState::Discharging, "USB")];
+
+        assert_eq!(tracker.collect_events(&[], &connected, &p).len(), 1);
+        assert!(tracker.collect_events(&connected, &[], &p).is_empty());
+        assert_eq!(tracker.collect_events(&[], &connected, &p).len(), 1);
+    }
+
+    #[test]
+    fn connect_prefs_can_disable() {
+        let mut tracker = NotifyTracker::new();
+        let p = prefs(true, true, false);
+        let connected = vec![pad("a", 65, PowerState::Discharging, "USB")];
+
+        assert!(tracker.collect_events(&[], &connected, &p).is_empty());
+    }
+
+    #[test]
+    fn connect_and_low_can_both_fire() {
+        let mut tracker = NotifyTracker::new();
+        let p = prefs(true, true, true);
+        let low = vec![pad("a", 5, PowerState::Discharging, "USB")];
+
+        let events = tracker.collect_events(&[], &low, &p);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].1, NotifyKind::Connect);
+        assert_eq!(events[1].1, NotifyKind::Low);
+    }
+
+    #[test]
     fn enters_low_once() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let mid = vec![pad("a", 50, PowerState::Discharging, "USB")];
         let low = vec![pad("a", 5, PowerState::Discharging, "USB")];
 
@@ -169,7 +234,7 @@ mod tests {
     #[test]
     fn leave_low_allows_reentry() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let low = vec![pad("a", 5, PowerState::Discharging, "BT")];
         let mid = vec![pad("a", 50, PowerState::Discharging, "BT")];
 
@@ -182,7 +247,7 @@ mod tests {
     #[test]
     fn charging_to_complete_notifies() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let charging = vec![pad("a", 80, PowerState::Charging, "USB")];
         let complete = vec![pad("a", 100, PowerState::Complete, "USB")];
 
@@ -197,7 +262,7 @@ mod tests {
     #[test]
     fn already_complete_on_connect_is_quiet() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let complete = vec![pad("a", 100, PowerState::Complete, "USB")];
 
         assert!(tracker.collect_events(&[], &complete, &p).is_empty());
@@ -207,7 +272,7 @@ mod tests {
     #[test]
     fn prefs_can_disable() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(false, false);
+        let p = prefs(false, false, false);
         let mid = vec![pad("a", 50, PowerState::Discharging, "USB")];
         let low = vec![pad("a", 5, PowerState::Discharging, "USB")];
         let charging = vec![pad("a", 80, PowerState::Charging, "USB")];
@@ -222,7 +287,7 @@ mod tests {
     #[test]
     fn multi_controller_independent() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let prev = vec![
             pad("a", 50, PowerState::Discharging, "USB"),
             pad("b", 80, PowerState::Charging, "Bluetooth"),
@@ -241,7 +306,7 @@ mod tests {
     #[test]
     fn disconnect_clears_flags() {
         let mut tracker = NotifyTracker::new();
-        let p = prefs(true, true);
+        let p = prefs(true, true, false);
         let low = vec![pad("a", 5, PowerState::Discharging, "USB")];
 
         let _ = tracker.collect_events(&[], &low, &p);

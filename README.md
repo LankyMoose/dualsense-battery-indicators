@@ -66,7 +66,7 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
 - Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
-- Autostart writes `dualsense-battery-indicators.cmd` into the user Startup folder (also toggleable from **Configure → Settings**).
+- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
 
 ## Platform support
 
@@ -112,8 +112,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.8
-git push origin v0.1.8
+git tag v0.1.9
+git push origin v0.1.9
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

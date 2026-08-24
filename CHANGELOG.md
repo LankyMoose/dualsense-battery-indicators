@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-25
+
+### Fixed
+
+- Windows autostart no longer flashes a Command Prompt window at login. Startup now uses a `.lnk` shortcut instead of a `.cmd` script; an existing `.cmd` entry is migrated automatically on launch.
+
 ## [0.1.8] - 2026-08-25
 
 ### Added
@@ -84,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.9]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.5...v0.1.6

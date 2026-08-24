@@ -3,6 +3,7 @@
 use crate::app_log;
 use crate::battery::{is_dualsense_gamepad, normalize_identity, resolve_device_identity};
 use crate::color::{Rgb, color_for_battery_percent};
+use crate::steam;
 use hidapi::{BusType, HidApi, HidDevice};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -42,6 +43,8 @@ static BT_OUTPUT_SEQ: AtomicU8 = AtomicU8::new(0);
 /// Serials that have already received a `LIGHT_OUT` claim this connection.
 static CLAIMED_SERIALS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+/// Last observed Steam running state; forget claims when it changes.
+static LAST_STEAM_RUNNING: LazyLock<Mutex<Option<bool>>> = LazyLock::new(|| Mutex::new(None));
 
 fn next_bt_seq_tag() -> u8 {
     let seq = BT_OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed) & 0x0F;
@@ -59,7 +62,34 @@ pub fn sync_lightbar_claims(active_serials: impl IntoIterator<Item = impl AsRef<
     }
 }
 
+/// Drop all `LIGHT_OUT` claims (e.g. Steam started/stopped).
+fn forget_all_claims() {
+    if let Ok(mut claimed) = CLAIMED_SERIALS.lock() {
+        claimed.clear();
+    }
+}
+
+/// Forget claims when Steam starts or stops so the next write picks the right path.
+fn sync_steam_transition() {
+    let running = steam::is_running();
+    let mut last = LAST_STEAM_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    match *last {
+        None => *last = Some(running),
+        Some(prev) if prev != running => {
+            forget_all_claims();
+            *last = Some(running);
+        }
+        Some(_) => {}
+    }
+}
+
 fn take_claim_if_needed(serial: &str) -> bool {
+    sync_steam_transition();
+    if steam::is_running() {
+        // Steam Input already initialized the lightbar; RGB-only writes work.
+        return false;
+    }
+
     let Ok(mut claimed) = CLAIMED_SERIALS.lock() else {
         return true;
     };
@@ -214,7 +244,8 @@ pub fn identify_controller(serial: &str, percent: u8) -> Result<(), String> {
     Ok(())
 }
 
-/// Apply a color to every connected DualSense (CLI / debug). Always re-claims.
+/// Apply a color to every connected DualSense (CLI / debug).
+/// Re-claims with `LIGHT_OUT` when Steam is not running.
 pub fn apply_lightbar_all(color: Rgb) -> Result<usize, String> {
     let api = HidApi::new().map_err(|e| e.to_string())?;
     let mut applied = 0usize;
@@ -298,8 +329,23 @@ mod tests {
         assert!(report[74..78].iter().any(|&b| b != 0));
     }
 
+    fn reset_claim_test_state(steam_running: bool) {
+        steam::set_running_for_test(Some(steam_running));
+        forget_all_claims();
+        *LAST_STEAM_RUNNING.lock().unwrap() = None;
+    }
+
+    fn clear_claim_test_state() {
+        steam::set_running_for_test(None);
+        forget_all_claims();
+        *LAST_STEAM_RUNNING.lock().unwrap() = None;
+    }
+
     #[test]
-    fn claim_tracking_inserts_once_then_sync_clears() {
+    fn claim_tracking_and_steam_behavior() {
+        // Single test so the shared Steam override is not raced by parallel runners.
+        reset_claim_test_state(false);
+
         sync_lightbar_claims(std::iter::empty::<&str>());
         assert!(take_claim_if_needed("aabbcc"));
         assert!(!take_claim_if_needed("aabbcc"));
@@ -308,5 +354,30 @@ mod tests {
         assert!(!take_claim_if_needed("ddeeff"));
         assert!(take_claim_if_needed("aabbcc"));
         sync_lightbar_claims(std::iter::empty::<&str>());
+
+        reset_claim_test_state(false);
+        assert!(take_claim_if_needed("aabbcc"));
+        assert!(!take_claim_if_needed("aabbcc"));
+
+        reset_claim_test_state(true);
+        assert!(!take_claim_if_needed("aabbcc"));
+        assert!(!take_claim_if_needed("ddeeff"));
+
+        reset_claim_test_state(false);
+        assert!(take_claim_if_needed("aabbcc"));
+
+        reset_claim_test_state(false);
+        assert!(take_claim_if_needed("aabbcc"));
+        assert!(!take_claim_if_needed("aabbcc"));
+
+        steam::set_running_for_test(Some(true));
+        *LAST_STEAM_RUNNING.lock().unwrap() = Some(false);
+        assert!(!take_claim_if_needed("aabbcc"));
+
+        steam::set_running_for_test(Some(false));
+        *LAST_STEAM_RUNNING.lock().unwrap() = Some(true);
+        assert!(take_claim_if_needed("aabbcc"));
+
+        clear_claim_test_state();
     }
 }

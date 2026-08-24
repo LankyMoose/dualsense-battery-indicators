@@ -12,6 +12,7 @@ mod icon;
 mod lightbar;
 mod notify;
 mod prefs;
+mod steam;
 mod tray;
 
 use app_meta::{DISPLAY_NAME, PKG_NAME, PKG_VERSION};

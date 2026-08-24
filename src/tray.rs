@@ -115,6 +115,8 @@ fn run_app(
 
     let prefs = Prefs::load();
     color::set_active_spectrum(prefs.spectrum);
+    #[cfg(windows)]
+    autostart::ensure_quiet_entry();
 
     let mut app = TrayApp {
         tray_icon: None,

@@ -97,13 +97,8 @@ impl ConfigureMenuBar {
             settings.notify_connect,
             None,
         );
-        let notify_low = CheckMenuItem::with_id(
-            NOTIFY_LOW_ID,
-            "When low",
-            true,
-            settings.notify_low,
-            None,
-        );
+        let notify_low =
+            CheckMenuItem::with_id(NOTIFY_LOW_ID, "When low", true, settings.notify_low, None);
         let notify_charged = CheckMenuItem::with_id(
             NOTIFY_CHARGED_ID,
             "When charged",

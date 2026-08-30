@@ -136,8 +136,10 @@ impl KnownControllers {
                 changed
             }
             None => {
-                self.by_serial
-                    .insert(controller.serial.clone(), KnownController::from_status(controller));
+                self.by_serial.insert(
+                    controller.serial.clone(),
+                    KnownController::from_status(controller),
+                );
                 self.dirty = true;
                 true
             }
@@ -284,10 +286,7 @@ mod tests {
         store.remember(&pad("remembered", 50, "USB"));
         store.dirty = false;
 
-        let live = vec![
-            pad("remembered", 75, "Bluetooth"),
-            pad("other", 30, "USB"),
-        ];
+        let live = vec![pad("remembered", 75, "Bluetooth"), pad("other", 30, "USB")];
         assert!(store.sync_from_live(&live));
         assert_eq!(store.by_serial["remembered"].percent, 75);
         assert_eq!(store.by_serial["remembered"].connection, "Bluetooth");

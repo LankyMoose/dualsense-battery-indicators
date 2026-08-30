@@ -8,14 +8,18 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
+  SIGNPATH_PROJECT_SLUG: dualsense-battery-indicators
+  SIGNPATH_SIGNING_POLICY_SLUG: release-signing
 
 jobs:
   windows:
     name: Build Windows release
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -28,15 +32,75 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Upload artifact
+      - name: Upload unsigned exe
+        id: upload-unsigned-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualsense-battery-indicators-windows-unsigned
+          path: target/release/dualsense-battery-indicators.exe
+          if-no-files-found: error
+
+      - name: Check whether SignPath is configured
+        id: check-signing
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if ($env:SIGNPATH_API_TOKEN) {
+            "configured=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "configured=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::SIGNPATH_API_TOKEN is not set; shipping an unsigned exe. See README → Code signing policy."
+          }
+
+      - name: Submit signing request to SignPath
+        if: steps.check-signing.outputs.configured == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Replace exe with SignPath-signed build
+        if: steps.check-signing.outputs.configured == 'true'
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem -Path signed -Recurse -Filter dualsense-battery-indicators.exe | Select-Object -First 1
+          if (-not $signed) { throw "SignPath did not return dualsense-battery-indicators.exe" }
+          Copy-Item $signed.FullName target/release/dualsense-battery-indicators.exe -Force
+
+      - name: Pack MSIX
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+        run: |
+          $args = @{
+            Exe = "target/release/dualsense-battery-indicators.exe"
+            OutDir = "target/msix"
+          }
+          if ($env:MSIX_IDENTITY_NAME) { $args.IdentityName = $env:MSIX_IDENTITY_NAME }
+          if ($env:MSIX_PUBLISHER) { $args.Publisher = $env:MSIX_PUBLISHER }
+          & ./msix/pack.ps1 @args
+
+      - name: Upload signed/packaged artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dualsense-battery-indicators-windows
-          path: target/release/dualsense-battery-indicators.exe
+          path: |
+            target/release/dualsense-battery-indicators.exe
+            target/msix/dualsense-battery-indicators.msix
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/dualsense-battery-indicators.exe
+          files: |
+            target/release/dualsense-battery-indicators.exe
+            target/msix/dualsense-battery-indicators.msix
           generate_release_notes: true

@@ -635,11 +635,13 @@ dependencies = [
  "hidapi",
  "ico",
  "notify-rust",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "single-instance",
  "softbuffer",
  "tray-icon",
+ "windows",
  "winit",
  "winres",
 ]

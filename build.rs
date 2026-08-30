@@ -21,6 +21,7 @@ fn main() {
     {
         write_app_ico(&out_dir, &connected);
         let ico_path = out_dir.join("app.ico");
+        let (version_display, version_packed) = cargo_version_quad();
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico_path.to_str().expect("utf-8 icon path"));
         res.set("ProductName", DISPLAY_NAME);
@@ -28,6 +29,14 @@ fn main() {
             "FileDescription",
             "Show DualSense controller battery levels in the system tray",
         );
+        res.set("CompanyName", "LankyMoose");
+        res.set("LegalCopyright", "Copyright (c) 2026 LankyMoose");
+        res.set("OriginalFilename", "dualsense-battery-indicators.exe");
+        res.set("InternalName", "dualsense-battery-indicators");
+        res.set("FileVersion", &version_display);
+        res.set("ProductVersion", &version_display);
+        res.set_version_info(winres::VersionInfo::FILEVERSION, version_packed);
+        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, version_packed);
         if let Err(err) = res.compile() {
             // Missing Windows SDK / RC tooling should not block non-icon builds in CI-like envs.
             println!("cargo:warning=winres failed to embed icon: {err}");
@@ -36,6 +45,18 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/icon_draw.rs");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// `0.1.10` → display `0.1.10.0` and the packed 64-bit VERSIONINFO quad.
+fn cargo_version_quad() -> (String, u64) {
+    let ver = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let mut parts = [0u64; 4];
+    for (i, p) in ver.split('.').take(4).enumerate() {
+        parts[i] = p.parse().unwrap_or(0);
+    }
+    let packed = (parts[0] << 48) | (parts[1] << 32) | (parts[2] << 16) | parts[3];
+    let display = format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3]);
+    (display, packed)
 }
 
 fn write_embedded_bytes(out_dir: &Path, connected: &[u8], dim: &[u8]) {

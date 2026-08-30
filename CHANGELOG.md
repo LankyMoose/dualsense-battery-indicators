@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Release pipeline prepares [SignPath Foundation](https://signpath.org/) Authenticode signing for the Windows `.exe` (active once the OSS application is approved).
+- MSIX package for Microsoft Store submission and sideload (`msix/pack.ps1`). Store installs use a Windows startup task instead of a Startup-folder shortcut.
+
 ## [0.1.10] - 2026-08-30
 
 ### Added

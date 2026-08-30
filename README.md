@@ -68,7 +68,7 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
 - Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
-- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
+- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically. Microsoft Store / MSIX builds use a Windows startup task instead.
 
 ## Platform support
 
@@ -118,7 +118,41 @@ git tag v0.1.10
 git push origin v0.1.10
 ```
 
-The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+The release workflow attaches `dualsense-battery-indicators.exe` and `dualsense-battery-indicators.msix` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+
+Until SignPath is connected, the `.exe` is unsigned. After that, GitHub Releases ship an Authenticode-signed `.exe` (publisher **SignPath Foundation**). The `.msix` is for [Microsoft Store](msix/README.md) submission; Partner Center re-signs it.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Authors:** [LankyMoose](https://github.com/LankyMoose) (repository owner)
+- **Reviewers:** [LankyMoose](https://github.com/LankyMoose)
+- **Approvers:** [LankyMoose](https://github.com/LankyMoose) (each SignPath signing request is approved in the SignPath dashboard)
+
+GitHub and SignPath accounts used for this project must have multi-factor authentication enabled.
+
+### One-time SignPath setup
+
+1. Apply for the [SignPath Foundation open-source program](https://signpath.org/) with this repository: https://github.com/LankyMoose/dualsense-battery-indicators (MIT, public, already shipping GitHub Releases).
+2. After approval, in the SignPath dashboard create a project with slug `dualsense-battery-indicators` and a signing policy slug `release-signing`. Artifact configuration: Windows `.exe`, product name **DualSense Battery Indicators**, product version matching the release.
+3. Install the SignPath GitHub App on this repository.
+4. In repo **Settings → Secrets and variables → Actions**:
+   - Secret `SIGNPATH_API_TOKEN` (Submitter role on that policy)
+   - Variable `SIGNPATH_ORGANIZATION_ID`
+5. The next `v*` tag waits up to 60 minutes for you to **approve the signing request** in SignPath, then attaches the signed exe.
+
+Until the token is set, releases still publish; they just stay unsigned.
+
+## Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+Battery status, notification preferences, lightbar colors, and remembered controllers stay on the local machine (`prefs.json`, `controllers.json`, and `app.log` under the app data directory). Desktop toasts are shown by the OS. There is no telemetry, account, or network API.
+
+## Microsoft Store
+
+See [msix/README.md](msix/README.md) for Partner Center identity, `runFullTrust` justification, screenshots, and how to build `dualsense-battery-indicators.msix`.
 
 ## License
 

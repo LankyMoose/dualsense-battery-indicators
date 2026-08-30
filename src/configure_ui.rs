@@ -89,35 +89,39 @@ impl ConfigureMenuBar {
         let menu = Menu::new();
 
         let settings_menu = Submenu::new("Settings", true);
+        let notifications = Submenu::new("Notifications", true);
         let notify_connect = CheckMenuItem::with_id(
             NOTIFY_CONNECT_ID,
-            "Notify on connect",
+            "On connect",
             true,
             settings.notify_connect,
             None,
         );
         let notify_low = CheckMenuItem::with_id(
             NOTIFY_LOW_ID,
-            "Notify when low",
+            "When low",
             true,
             settings.notify_low,
             None,
         );
         let notify_charged = CheckMenuItem::with_id(
             NOTIFY_CHARGED_ID,
-            "Notify when charged",
+            "When charged",
             true,
             settings.notify_charged,
             None,
         );
-        settings_menu
+        notifications
             .append(&notify_connect)
             .map_err(|e| format!("menu append: {e}"))?;
-        settings_menu
+        notifications
             .append(&notify_low)
             .map_err(|e| format!("menu append: {e}"))?;
-        settings_menu
+        notifications
             .append(&notify_charged)
+            .map_err(|e| format!("menu append: {e}"))?;
+        settings_menu
+            .append(&notifications)
             .map_err(|e| format!("menu append: {e}"))?;
 
         #[cfg(windows)]

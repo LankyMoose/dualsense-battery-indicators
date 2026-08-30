@@ -10,7 +10,7 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Tooltip shows how many controllers are connected
 - Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
 - **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
-- Desktop notifications when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (native **Configure → Settings** menu; on by default)
+- Desktop notifications when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (Configure → Settings → **Notifications**; on by default)
 - **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
@@ -114,8 +114,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.9
-git push origin v0.1.9
+git tag v0.1.10
+git push origin v0.1.10
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

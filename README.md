@@ -8,7 +8,8 @@ System tray app that shows connected DualSense controller battery levels, colors
 
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
-- Menu lists each controller (battery % + status); click one to **identify** (white flash ×5)
+- Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
+- **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
 - Desktop notifications when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (native **Configure → Settings** menu; on by default)
 - **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
@@ -66,6 +67,7 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
 - Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
+- Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
 - Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
 
 ## Platform support

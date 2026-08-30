@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in **Remember** toggle per controller in the tray menu. Remembered pads stay listed after disconnect with their last-known battery % (`controllers.json` beside `prefs.json`). Each controller is a submenu with **Identify** and **Remember**.
+
 ## [0.1.9] - 2026-08-25
 
 ### Fixed

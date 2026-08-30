@@ -88,26 +88,6 @@ pub struct ControllerStatus {
 }
 
 impl ControllerStatus {
-    pub fn menu_label(&self) -> String {
-        if self.is_low_battery() {
-            format!(
-                "LOW {}% — {} ({}) — {}",
-                self.percent,
-                self.product,
-                self.connection,
-                self.state.as_str()
-            )
-        } else {
-            format!(
-                "{} ({})  {}% — {}",
-                self.product,
-                self.connection,
-                self.percent,
-                self.state.as_str()
-            )
-        }
-    }
-
     /// Critical low bucket while discharging (drives orange pulse).
     pub fn is_low_battery(&self) -> bool {
         self.percent <= LOW_BATTERY_PERCENT && self.state.is_discharging()

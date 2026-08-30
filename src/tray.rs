@@ -7,6 +7,7 @@ use crate::configure_ui::{self, ConfigureAction, ConfigureSettings, ConfigureWin
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::{self, Preset};
 use crate::icon;
+use crate::known::{self, KnownControllers};
 use crate::lightbar::{
     self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
 };
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -35,6 +36,7 @@ const UNREAD_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const QUIT_ID: &str = "quit";
 const CONFIGURE_ID: &str = "configure";
 const IDENTIFY_ID_PREFIX: &str = "identify:";
+const REMEMBER_ID_PREFIX: &str = "remember:";
 
 #[derive(Debug)]
 enum UserEvent {
@@ -59,6 +61,7 @@ struct TrayApp {
     last_battery_poll: Instant,
     proxy: EventLoopProxy<UserEvent>,
     prefs: Prefs,
+    known: KnownControllers,
     notify: NotifyTracker,
     configure: Option<ConfigureWindow>,
     #[cfg(feature = "dev-emulate")]
@@ -114,6 +117,7 @@ fn run_app(
     start_low_battery_pulse_thread(Arc::clone(&identifying), Arc::clone(&low_battery));
 
     let prefs = Prefs::load();
+    let known = KnownControllers::load();
     color::set_active_spectrum(prefs.spectrum);
     #[cfg(windows)]
     autostart::ensure_quiet_entry();
@@ -128,6 +132,7 @@ fn run_app(
         last_battery_poll: Instant::now(),
         proxy: event_loop.create_proxy(),
         prefs,
+        known,
         notify: NotifyTracker::new(),
         configure: None,
         #[cfg(feature = "dev-emulate")]
@@ -253,13 +258,18 @@ impl TrayApp {
     }
 
     fn apply_controllers(&mut self, controllers: Vec<ControllerStatus>) {
-        if controllers_equivalent(&self.controllers, &controllers) {
+        let known_changed = self.known.sync_from_live(&controllers);
+        let controllers_changed = !controllers_equivalent(&self.controllers, &controllers);
+        if !controllers_changed && !known_changed {
             return;
         }
-        let previous = std::mem::replace(&mut self.controllers, controllers);
-        self.notify
-            .evaluate(&previous, &self.controllers, &self.prefs);
-        self.sync_low_battery();
+        if controllers_changed {
+            let previous = std::mem::replace(&mut self.controllers, controllers);
+            self.notify
+                .evaluate(&previous, &self.controllers, &self.prefs);
+            self.sync_low_battery();
+        }
+        self.known.save();
         self.apply_tray();
     }
 
@@ -384,6 +394,21 @@ impl TrayApp {
         }
 
         self.request_refresh();
+    }
+
+    fn on_remember_menu(&mut self, serial: &str) {
+        if is_emulated_serial(serial) {
+            return;
+        }
+
+        if self.known.is_remembered(serial) {
+            self.known.forget(serial);
+        } else if let Some(controller) = self.controllers.iter().find(|c| c.serial == serial) {
+            self.known.remember(controller);
+        }
+
+        self.known.save();
+        self.apply_tray();
     }
 
     fn identify(&self, serial: &str) {
@@ -523,19 +548,33 @@ impl TrayApp {
 
     fn build_menu(&self) -> Menu {
         let menu = Menu::new();
+        let disconnected = self.known.remembered_disconnected(&self.controllers);
 
-        if self.controllers.is_empty() {
+        if self.controllers.is_empty() && disconnected.is_empty() {
             let empty = MenuItem::new("No DualSense connected", false, None);
             let _ = menu.append(&empty);
         } else {
-            let hint = MenuItem::new("Click a controller to identify", false, None);
-            let _ = menu.append(&hint);
-            let _ = menu.append(&PredefinedMenuItem::separator());
-
             for controller in &self.controllers {
-                let id = format!("{IDENTIFY_ID_PREFIX}{}", controller.serial);
-                let item = MenuItem::with_id(id, controller.menu_label(), true, None);
-                let _ = menu.append(&item);
+                append_controller_submenu(
+                    &menu,
+                    &controller.serial,
+                    &known::submenu_label_live(controller),
+                    true,
+                    self.known.is_remembered(&controller.serial),
+                    KnownControllers::is_storable_serial(&controller.serial)
+                        && !is_emulated_serial(&controller.serial),
+                );
+            }
+            for record in disconnected {
+                append_controller_submenu(
+                    &menu,
+                    &record.serial,
+                    &record.submenu_label_disconnected(),
+                    false,
+                    true,
+                    KnownControllers::is_storable_serial(&record.serial)
+                        && !is_emulated_serial(&record.serial),
+                );
             }
         }
 
@@ -550,8 +589,36 @@ impl TrayApp {
     }
 }
 
+fn append_controller_submenu(
+    menu: &Menu,
+    serial: &str,
+    label: &str,
+    identify_enabled: bool,
+    remember_checked: bool,
+    remember_enabled: bool,
+) {
+    let submenu = Submenu::new(label, true);
+    let identify_id = format!("{IDENTIFY_ID_PREFIX}{serial}");
+    let identify = MenuItem::with_id(identify_id, "Identify", identify_enabled, None);
+    let _ = submenu.append(&identify);
+    let remember_id = format!("{REMEMBER_ID_PREFIX}{serial}");
+    let remember = CheckMenuItem::with_id(
+        remember_id,
+        "Remember",
+        remember_enabled,
+        remember_checked,
+        None,
+    );
+    let _ = submenu.append(&remember);
+    let _ = menu.append(&submenu);
+}
+
 fn parse_identify_id(id: &str) -> Option<&str> {
     id.strip_prefix(IDENTIFY_ID_PREFIX)
+}
+
+fn parse_remember_id(id: &str) -> Option<&str> {
+    id.strip_prefix(REMEMBER_ID_PREFIX)
 }
 
 impl ApplicationHandler<UserEvent> for TrayApp {
@@ -601,6 +668,8 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                     self.on_notify_connect_menu();
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
+                } else if let Some(serial) = parse_remember_id(id) {
+                    self.on_remember_menu(serial);
                 }
                 #[cfg(windows)]
                 if id == configure_ui::AUTOSTART_ID {

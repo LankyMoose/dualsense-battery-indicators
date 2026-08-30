@@ -9,6 +9,7 @@ mod configure_ui;
 #[cfg(feature = "dev-emulate")]
 mod emulate;
 mod icon;
+mod known;
 mod lightbar;
 mod notify;
 mod prefs;

@@ -120,7 +120,7 @@ fn format_event(controller: &ControllerStatus, kind: NotifyKind) -> NotifyEvent 
         },
         NotifyKind::Disconnect => NotifyEvent {
             heading,
-            body: "disconnected".to_string(),
+            body: format!("disconnected — {}%", controller.percent),
             percent: Some(controller.percent),
         },
         NotifyKind::Low => NotifyEvent {
@@ -203,7 +203,7 @@ mod tests {
         let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
         let events = tracker.evaluate(&connected, &[], &prefs(true, true, false));
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].body, "disconnected");
+        assert_eq!(events[0].body, "disconnected — 40%");
         assert_eq!(events[0].percent, Some(40));
     }
 

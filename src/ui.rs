@@ -1,8 +1,11 @@
 //! Shared software-rendered UI theme and drawing primitives.
 
+pub mod layout;
+
 use crate::color::Rgb;
 use crate::icon_draw;
 use fontdue::Font;
+use layout::Rect;
 
 pub const BG: u32 = rgb(23, 26, 33);
 pub const PANEL: u32 = rgb(32, 37, 45);
@@ -11,6 +14,18 @@ pub const LINE: u32 = rgb(55, 63, 75);
 pub const INK: u32 = rgb(241, 243, 245);
 pub const MUTED: u32 = rgb(170, 178, 189);
 pub const DIM: u32 = rgb(113, 122, 135);
+
+#[derive(Clone, Copy)]
+pub enum HorizontalAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy)]
+pub enum VerticalAlign {
+    Center,
+}
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
@@ -99,6 +114,23 @@ impl<'a> Framebuffer<'a> {
         );
     }
 
+    pub fn line(&mut self, from: (f64, f64), to: (f64, f64), thickness: f64, color: u32) {
+        let x0 = self.to_phys(from.0);
+        let y0 = self.to_phys(from.1);
+        let x1 = self.to_phys(to.0);
+        let y1 = self.to_phys(to.1);
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        let diameter = self.to_phys(thickness).max(1);
+        let before = diameter / 2;
+        let after = diameter - before;
+        for step in 0..=steps {
+            let amount = step as f64 / steps as f64;
+            let x = (x0 as f64 + (x1 - x0) as f64 * amount).round() as i32;
+            let y = (y0 as f64 + (y1 - y0) as f64 * amount).round() as i32;
+            self.fill_rect_phys(x - before, y - before, x + after, y + after, color);
+        }
+    }
+
     pub fn round_rect(
         &mut self,
         bounds: (f64, f64, f64, f64),
@@ -147,6 +179,58 @@ impl<'a> Framebuffer<'a> {
             .map(|ch| self.font.metrics(ch, px).advance_width as f64)
             .sum::<f64>()
             / self.scale
+    }
+
+    pub fn line_height(&self, logical_size: f32) -> f64 {
+        let px = (logical_size as f64 * self.scale) as f32;
+        self.font
+            .horizontal_line_metrics(px)
+            .map(|metrics| metrics.new_line_size as f64 / self.scale)
+            .unwrap_or(logical_size as f64 * 1.2)
+    }
+
+    pub fn fitted_text(&self, text: &str, logical_size: f32, max_width: f64) -> String {
+        if self.text_width(text, logical_size) <= max_width {
+            return text.to_string();
+        }
+        let ellipsis = "…";
+        let ellipsis_width = self.text_width(ellipsis, logical_size);
+        if ellipsis_width > max_width {
+            return String::new();
+        }
+        let mut result = String::new();
+        for character in text.chars() {
+            result.push(character);
+            if self.text_width(&result, logical_size) + ellipsis_width > max_width {
+                result.pop();
+                break;
+            }
+        }
+        result.push('…');
+        result
+    }
+
+    pub fn text_in_rect(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: u32,
+        logical_size: f32,
+        horizontal: HorizontalAlign,
+        vertical: VerticalAlign,
+    ) {
+        let text = self.fitted_text(text, logical_size, rect.w.max(0.0));
+        let width = self.text_width(&text, logical_size);
+        let height = self.line_height(logical_size);
+        let x = match horizontal {
+            HorizontalAlign::Left => rect.x,
+            HorizontalAlign::Center => rect.x + (rect.w - width) / 2.0,
+            HorizontalAlign::Right => rect.right() - width,
+        };
+        let y = match vertical {
+            VerticalAlign::Center => rect.y + (rect.h - height) / 2.0,
+        };
+        self.text(x, y, &text, color, logical_size);
     }
 
     pub fn text(&mut self, x: f64, y: f64, text: &str, color: u32, logical_size: f32) {
@@ -249,4 +333,25 @@ fn inside_rounded(x: i32, y: i32, x0: i32, y0: i32, x1: i32, y1: i32, radius: i3
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fitted_text_stays_within_logical_width_at_common_scales() {
+        let font = load_system_ui_font().unwrap();
+        for scale in [1.0, 1.25, 1.5] {
+            let mut pixels = vec![0; (400.0_f64 * scale).ceil() as usize * 40];
+            let framebuffer = Framebuffer::new(&mut pixels, 400, 40, scale, &font);
+            let fitted = framebuffer.fitted_text(
+                "DualSense Wireless Controller with a deliberately long product name",
+                13.0,
+                140.0,
+            );
+            assert!(fitted.ends_with('…'));
+            assert!(framebuffer.text_width(&fitted, 13.0) <= 140.0);
+        }
+    }
 }

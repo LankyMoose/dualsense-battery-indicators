@@ -6,10 +6,11 @@ use crate::color::{self, BatterySpectrum, color_for_battery_percent};
 use crate::configure_ui::{
     ConfigureAction, ConfigureSettings, ConfigureWindow, NotificationSetting,
 };
+use crate::controller_popup::{ControllerPopup, ControllerRow, PopupAction, TrayAnchor};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::{self, Preset};
 use crate::icon;
-use crate::known::{self, KnownControllers};
+use crate::known::KnownControllers;
 use crate::lightbar::{
     self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
 };
@@ -21,8 +22,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::{
+    MouseButton as TrayMouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
+};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -38,13 +41,12 @@ const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
 /// When HID lists pads but battery reads keep failing, retry sooner than BATTERY_INTERVAL.
 const UNREAD_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const QUIT_ID: &str = "quit";
-const CONFIGURE_ID: &str = "configure";
-const IDENTIFY_ID_PREFIX: &str = "identify:";
-const REMEMBER_ID_PREFIX: &str = "remember:";
+const SETTINGS_ID: &str = "settings";
 
 #[derive(Debug)]
 pub(crate) enum UserEvent {
     MenuEvent(MenuEvent),
+    TrayIconEvent(TrayIconEvent),
     /// Periodic tick: check presence; full poll when membership changes or battery is due.
     Tick,
     /// Result of a background `poll_controllers` call.
@@ -72,6 +74,7 @@ struct TrayApp {
     known: KnownControllers,
     notify: NotifyTracker,
     configure: Option<ConfigureWindow>,
+    controller_popup: Option<ControllerPopup>,
     toast: Option<ToastWindow>,
     toast_queue: VecDeque<ToastMessage>,
     toast_deadline: Option<Instant>,
@@ -115,7 +118,10 @@ fn run_app(
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    let _tray_events = TrayIconEvent::receiver();
+    let proxy = event_loop.create_proxy();
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(UserEvent::TrayIconEvent(event));
+    }));
 
     let proxy = event_loop.create_proxy();
     std::thread::spawn(move || {
@@ -150,6 +156,7 @@ fn run_app(
         known,
         notify: NotifyTracker::new(),
         configure: None,
+        controller_popup: None,
         toast: None,
         toast_queue: VecDeque::new(),
         toast_deadline: None,
@@ -386,7 +393,6 @@ impl TrayApp {
     fn apply_tray(&mut self) {
         let icon = icon::icon_for_controllers(&self.controllers);
         let tooltip = icon::tooltip_for_controllers(&self.controllers);
-        let menu = self.build_menu();
 
         let Some(tray) = self.tray_icon.as_mut() else {
             return;
@@ -394,7 +400,7 @@ impl TrayApp {
 
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_tooltip(Some(tooltip));
-        tray.set_menu(Some(Box::new(menu)));
+        self.sync_controller_popup();
     }
 
     fn create_tray(&mut self, event_loop: &ActiveEventLoop) {
@@ -413,6 +419,7 @@ impl TrayApp {
             .with_tooltip(tooltip)
             .with_icon(icon)
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .build()
         {
             Ok(tray) => self.tray_icon = Some(tray),
@@ -424,7 +431,36 @@ impl TrayApp {
             Err(err) => app_log::error(format!("failed to create toast window: {err}")),
         }
 
+        match ControllerPopup::open(event_loop, event_loop.owned_display_handle()) {
+            Ok(window) => self.controller_popup = Some(window),
+            Err(err) => app_log::error(format!("failed to create controller popup: {err}")),
+        }
+        self.sync_controller_popup();
+
         self.request_refresh();
+    }
+
+    fn popup_rows(&self) -> Vec<ControllerRow> {
+        let mut rows = Vec::new();
+        for controller in &self.controllers {
+            rows.push(ControllerRow::connected(
+                controller,
+                self.known.is_remembered(&controller.serial),
+                KnownControllers::is_storable_serial(&controller.serial)
+                    && !is_emulated_serial(&controller.serial),
+            ));
+        }
+        for controller in self.known.remembered_disconnected(&self.controllers) {
+            rows.push(ControllerRow::disconnected(controller));
+        }
+        rows
+    }
+
+    fn sync_controller_popup(&mut self) {
+        let rows = self.popup_rows();
+        if let Some(popup) = self.controller_popup.as_mut() {
+            popup.sync(rows, self.prefs.spectrum);
+        }
     }
 
     fn queue_notifications(&mut self, events: Vec<NotifyEvent>) {
@@ -646,6 +682,7 @@ impl TrayApp {
                 ));
             }
         }
+        self.sync_controller_popup();
     }
 
     fn on_configure_action(&mut self, action: ConfigureAction) {
@@ -662,6 +699,45 @@ impl TrayApp {
             ConfigureAction::DeveloperPreset(preset) => self.apply_dev_preset(preset),
             ConfigureAction::Closed => {
                 self.configure = None;
+            }
+        }
+    }
+
+    fn on_popup_action(&mut self, event_loop: &ActiveEventLoop, action: PopupAction) {
+        match action {
+            PopupAction::None => {}
+            PopupAction::Identify(serial) => self.identify(&serial),
+            PopupAction::ToggleRemember(serial) => self.on_remember_menu(&serial),
+            PopupAction::OpenSettings => {
+                if let Some(popup) = self.controller_popup.as_mut() {
+                    popup.hide();
+                }
+                self.open_configure(event_loop);
+            }
+            PopupAction::Closed => {
+                if let Some(popup) = self.controller_popup.as_mut() {
+                    popup.hide();
+                }
+            }
+        }
+    }
+
+    fn on_tray_icon_event(&mut self, event: TrayIconEvent) {
+        if let TrayIconEvent::Click {
+            rect,
+            button: TrayMouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            let anchor = TrayAnchor {
+                x: rect.position.x.round() as i32,
+                y: rect.position.y.round() as i32,
+                width: rect.size.width,
+                height: rect.size.height,
+            };
+            if let Some(popup) = self.controller_popup.as_mut() {
+                popup.toggle(anchor);
             }
         }
     }
@@ -683,77 +759,12 @@ impl TrayApp {
 
     fn build_menu(&self) -> Menu {
         let menu = Menu::new();
-        let disconnected = self.known.remembered_disconnected(&self.controllers);
-
-        if self.controllers.is_empty() && disconnected.is_empty() {
-            let empty = MenuItem::new("No DualSense connected", false, None);
-            let _ = menu.append(&empty);
-        } else {
-            for controller in &self.controllers {
-                append_controller_submenu(
-                    &menu,
-                    &controller.serial,
-                    &known::submenu_label_live(controller),
-                    true,
-                    self.known.is_remembered(&controller.serial),
-                    KnownControllers::is_storable_serial(&controller.serial)
-                        && !is_emulated_serial(&controller.serial),
-                );
-            }
-            for record in disconnected {
-                append_controller_submenu(
-                    &menu,
-                    &record.serial,
-                    &record.submenu_label_disconnected(),
-                    false,
-                    true,
-                    KnownControllers::is_storable_serial(&record.serial)
-                        && !is_emulated_serial(&record.serial),
-                );
-            }
-        }
-
-        let _ = menu.append(&PredefinedMenuItem::separator());
-
-        let configure = MenuItem::with_id(CONFIGURE_ID, "Configure", true, None);
-        let _ = menu.append(&configure);
-
+        let settings = MenuItem::with_id(SETTINGS_ID, "Settings", true, None);
+        let _ = menu.append(&settings);
         let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
         let _ = menu.append(&quit);
         menu
     }
-}
-
-fn append_controller_submenu(
-    menu: &Menu,
-    serial: &str,
-    label: &str,
-    identify_enabled: bool,
-    remember_checked: bool,
-    remember_enabled: bool,
-) {
-    let submenu = Submenu::new(label, true);
-    let identify_id = format!("{IDENTIFY_ID_PREFIX}{serial}");
-    let identify = MenuItem::with_id(identify_id, "Identify", identify_enabled, None);
-    let _ = submenu.append(&identify);
-    let remember_id = format!("{REMEMBER_ID_PREFIX}{serial}");
-    let remember = CheckMenuItem::with_id(
-        remember_id,
-        "Remember",
-        remember_enabled,
-        remember_checked,
-        None,
-    );
-    let _ = submenu.append(&remember);
-    let _ = menu.append(&submenu);
-}
-
-fn parse_identify_id(id: &str) -> Option<&str> {
-    id.strip_prefix(IDENTIFY_ID_PREFIX)
-}
-
-fn parse_remember_id(id: &str) -> Option<&str> {
-    id.strip_prefix(REMEMBER_ID_PREFIX)
 }
 
 impl ApplicationHandler<UserEvent> for TrayApp {
@@ -765,6 +776,21 @@ impl ApplicationHandler<UserEvent> for TrayApp {
         window_id: WindowId,
         event: winit::event::WindowEvent,
     ) {
+        if self
+            .controller_popup
+            .as_ref()
+            .is_some_and(|window| window.window_id() == window_id)
+        {
+            let action = self
+                .controller_popup
+                .as_mut()
+                .map(|window| window.handle(&event))
+                .unwrap_or(PopupAction::None);
+            self.on_popup_action(event_loop, action);
+            self.update_control_flow(event_loop);
+            return;
+        }
+
         if self
             .toast
             .as_ref()
@@ -819,17 +845,14 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 self.animate_toast()
             }
             UserEvent::ToastFrame(_) => {}
+            UserEvent::TrayIconEvent(event) => self.on_tray_icon_event(event),
             UserEvent::MenuEvent(event) => {
                 let id = event.id.as_ref();
                 if id == QUIT_ID {
                     self.tray_icon.take();
                     event_loop.exit();
-                } else if id == CONFIGURE_ID {
+                } else if id == SETTINGS_ID {
                     self.open_configure(event_loop);
-                } else if let Some(serial) = parse_identify_id(id) {
-                    self.identify(serial);
-                } else if let Some(serial) = parse_remember_id(id) {
-                    self.on_remember_menu(serial);
                 }
             }
         }

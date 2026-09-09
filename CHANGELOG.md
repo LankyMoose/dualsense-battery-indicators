@@ -11,12 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Steam-style, always-on-top overlay toasts replace OS notifications for controller connect, disconnect, low-battery, and charged events.
 - Configure’s Toast position controls select any screen corner and immediately preview the placement.
+- Left-clicking the tray icon opens an anchored controller popup with live and remembered pads, battery state, click-to-identify rows, per-controller Remember controls, and a Settings shortcut (Windows and macOS).
 
 ### Changed
 
 - Toasts slide vertically in and out from their configured screen edge, dismiss on click, Escape, or automatically after five seconds, and queue when multiple controller events occur together.
 - Configure now uses the same dark visual language as overlay toasts, with custom window chrome and notification, position, autostart, lightbar, and developer controls directly in the window.
 - Configure’s custom title bar is more compact.
+- The native right-click tray menu now contains only **Settings** and **Exit**; controller status and actions moved to the reusable dark popup.
+- Configure, controller popup, and toast spacing now comes from shared Taffy Flexbox layouts, design tokens, and measured text bounds instead of independent absolute coordinates; long labels are ellipsized and toast margins scale with monitor DPI.
+- Configure is now a compact single-column window with concise section headings, a corner-based toast-position diagram, and an inline color editor that expands from the spectrum preview. Configure and the controller popup now share the same compact header height and title treatment.
 
 ## [0.1.10] - 2026-08-30
 

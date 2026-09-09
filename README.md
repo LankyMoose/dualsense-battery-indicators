@@ -8,13 +8,13 @@ System tray app that shows connected DualSense controller battery levels, colors
 
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
-- Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
-- **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
-- Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (≤5% discharging), or **finishes charging** (tray → **Configure**; on by default)
+- Left-click the tray icon for a dark controller popup with battery state, click-to-**Identify**, and an opt-in **Remember** checkbox; right-click for **Settings** and **Exit**
+- **Remember** a controller to keep it in the popup after disconnect with its last-known charge % (off by default)
+- Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (≤5% discharging), or **finishes charging** (tray → **Settings**; on by default)
 - Toasts slide vertically in from any configurable screen corner, stay above borderless-fullscreen games, and slide away on click, Escape, or automatically after five seconds
 - Dark custom Configure window for notification, toast-position, autostart, and lightbar settings
 - Detects controllers connecting/disconnecting within a few seconds
-- Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
+- Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings**
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**
 - Single-instance (second launch exits quietly)
 - Logs to a file (see Troubleshooting)
@@ -71,6 +71,7 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
 - Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
 - Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
+- The custom left-click controller popup is available on Windows and macOS. The `tray-icon` Linux backend does not emit tray click events; use the right-click **Settings** menu there.
 
 ## Platform support
 

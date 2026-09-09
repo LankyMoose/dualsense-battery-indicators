@@ -6,6 +6,7 @@ mod autostart;
 mod battery;
 mod color;
 mod configure_ui;
+mod controller_popup;
 #[cfg(feature = "dev-emulate")]
 mod emulate;
 mod icon;

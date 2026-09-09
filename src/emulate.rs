@@ -21,18 +21,6 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub fn menu_id(self) -> &'static str {
-        match self {
-            Self::Discharging50 => "dev:discharging50",
-            Self::LowBattery => "dev:low",
-            Self::Charging => "dev:charging",
-            Self::FullyCharged => "dev:complete",
-            Self::ChargeCompleteStep => "dev:charge_step",
-            Self::TwoPads => "dev:two",
-            Self::Clear => "dev:clear",
-        }
-    }
-
     pub fn menu_label(self) -> &'static str {
         match self {
             Self::Discharging50 => "Emulate: discharging 50%",
@@ -43,10 +31,6 @@ impl Preset {
             Self::TwoPads => "Emulate: two pads",
             Self::Clear => "Clear emulation",
         }
-    }
-
-    pub fn from_menu_id(id: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|p| p.menu_id() == id)
     }
 
     pub const ALL: &'static [Preset] = &[

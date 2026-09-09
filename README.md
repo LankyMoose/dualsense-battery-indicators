@@ -10,9 +10,9 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Tooltip shows how many controllers are connected
 - Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
 - **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
-- Steam-style overlay toasts when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (Configure → Settings → **Notifications**; on by default)
+- Steam-style overlay toasts when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (tray → **Configure**; on by default)
 - Toasts slide vertically in from any configurable screen corner, stay above borderless-fullscreen games, and slide away on click, Escape, or automatically after five seconds
-- **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
+- Dark custom Configure window for notification, toast-position, autostart, and lightbar settings
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**
@@ -49,7 +49,7 @@ For testing notifications without real hardware, build with the `dev-emulate` fe
 cargo run --features dev-emulate -- --dev
 ```
 
-That unlocks a **Developer** menu in the **Configure** window with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
+That unlocks a **Developer** section in the **Configure** window with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
 
 ### CLI
 
@@ -60,7 +60,7 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 | `--install-autostart` | Windows: add a Startup entry for this exe |
 | `--uninstall-autostart` | Windows: remove that Startup entry |
 | `--list-controllers` | Print connected DualSense pads and exit |
-| `--dev` | Enable Developer menu in Configure (only when built with `--features dev-emulate`) |
+| `--dev` | Enable Developer controls in Configure (only when built with `--features dev-emulate`) |
 
 ## Windows notes
 
@@ -69,7 +69,7 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
 - Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/position + lightbar spectrum)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
-- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
+- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
 - Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
 
 ## Platform support

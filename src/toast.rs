@@ -1,10 +1,9 @@
 //! Reusable, no-activate overlay window for controller notifications.
 
 use crate::color::{BatterySpectrum, Rgb};
-use crate::configure_ui::load_system_ui_font;
-use crate::icon_draw;
 use crate::notify::NotifyEvent;
 use crate::prefs::ToastPosition;
+use crate::ui::{self, Framebuffer};
 use fontdue::Font;
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
@@ -27,10 +26,6 @@ const WIDTH: f64 = 360.0;
 const HEIGHT: f64 = 88.0;
 const MARGIN: i32 = 20;
 pub const SLIDE_DURATION: Duration = Duration::from_millis(250);
-const BG: u32 = 0x171A21;
-const INK: u32 = 0xF1F3F5;
-const MUTED: u32 = 0xAAB2BD;
-
 #[derive(Debug, Clone)]
 pub struct ToastMessage {
     pub heading: String,
@@ -95,7 +90,7 @@ impl ToastWindow {
         Ok(Self {
             window,
             surface,
-            font: load_system_ui_font()?,
+            font: ui::load_system_ui_font()?,
             message: None,
             placement: None,
         })
@@ -208,19 +203,19 @@ impl ToastWindow {
             .buffer_mut()
             .map_err(|e| format!("buffer: {e}"))?;
         let scale = self.window.scale_factor();
-        let mut fb = Framebuffer {
-            buf: &mut buffer,
-            w: width.get() as usize,
-            h: height.get() as usize,
+        let mut fb = Framebuffer::new(
+            &mut buffer,
+            width.get() as usize,
+            height.get() as usize,
             scale,
-            font: &self.font,
-        };
+            &self.font,
+        );
 
-        fb.clear(BG);
-        fb.fill_rect(0.0, 0.0, 5.0, HEIGHT, rgb(message.accent));
+        fb.clear(ui::BG);
+        fb.fill_rect(0.0, 0.0, 5.0, HEIGHT, ui::rgb_of(message.accent));
         fb.icon(18.0, 18.0, 52.0, message.accent);
-        fb.text(84.0, 20.0, &message.heading, INK, 15.0);
-        fb.text(84.0, 47.0, &message.body, MUTED, 13.0);
+        fb.text(84.0, 20.0, &message.heading, ui::INK, 15.0);
+        fb.text(84.0, 47.0, &message.body, ui::MUTED, 13.0);
         buffer.present().map_err(|e| format!("present: {e}"))
     }
 }
@@ -347,110 +342,6 @@ fn target_area(_window: &Window) -> TargetArea {
         },
         scale: dpi.max(96) as f64 / 96.0,
     }
-}
-
-struct Framebuffer<'a> {
-    buf: &'a mut [u32],
-    w: usize,
-    h: usize,
-    scale: f64,
-    font: &'a Font,
-}
-
-impl Framebuffer<'_> {
-    fn clear(&mut self, color: u32) {
-        self.buf.fill(color);
-    }
-
-    fn to_phys(&self, value: f64) -> i32 {
-        (value * self.scale).round() as i32
-    }
-
-    fn put(&mut self, x: i32, y: i32, color: u32) {
-        if x >= 0 && y >= 0 && (x as usize) < self.w && (y as usize) < self.h {
-            self.buf[y as usize * self.w + x as usize] = color;
-        }
-    }
-
-    fn fill_rect(&mut self, x: f64, y: f64, width: f64, height: f64, color: u32) {
-        for py in self.to_phys(y)..self.to_phys(y + height) {
-            for px in self.to_phys(x)..self.to_phys(x + width) {
-                self.put(px, py, color);
-            }
-        }
-    }
-
-    fn icon(&mut self, x: f64, y: f64, size: f64, accent: Rgb) {
-        let pixels = icon_draw::render(
-            icon_draw::BODY,
-            icon_draw::SHADE,
-            [accent.r, accent.g, accent.b, 255],
-        );
-        let x0 = self.to_phys(x);
-        let y0 = self.to_phys(y);
-        let out = self.to_phys(size).max(1);
-        for dy in 0..out {
-            for dx in 0..out {
-                let sx = dx * icon_draw::SIZE as i32 / out;
-                let sy = dy * icon_draw::SIZE as i32 / out;
-                let source = pixels[(sy as u32 * icon_draw::SIZE + sx as u32) as usize];
-                if source[3] != 0 {
-                    self.put(
-                        x0 + dx,
-                        y0 + dy,
-                        ((source[0] as u32) << 16) | ((source[1] as u32) << 8) | source[2] as u32,
-                    );
-                }
-            }
-        }
-    }
-
-    fn text(&mut self, x: f64, y: f64, text: &str, color: u32, logical_size: f32) {
-        let px = (logical_size as f64 * self.scale) as f32;
-        let ascent = self
-            .font
-            .horizontal_line_metrics(px)
-            .map(|metrics| metrics.ascent)
-            .unwrap_or(px * 0.8);
-        let baseline = self.to_phys(y) as f32 + ascent;
-        let mut pen_x = self.to_phys(x) as f32;
-
-        for ch in text.chars() {
-            let (metrics, bitmap) = self.font.rasterize(ch, px);
-            if metrics.width > 0 && metrics.height > 0 {
-                let glyph_x = (pen_x + metrics.xmin as f32).round() as i32;
-                let glyph_y =
-                    (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
-                for row in 0..metrics.height {
-                    for col in 0..metrics.width {
-                        let cover = bitmap[row * metrics.width + col];
-                        if cover != 0 {
-                            self.blend(glyph_x + col as i32, glyph_y + row as i32, color, cover);
-                        }
-                    }
-                }
-            }
-            pen_x += metrics.advance_width;
-        }
-    }
-
-    fn blend(&mut self, x: i32, y: i32, color: u32, alpha: u8) {
-        if x < 0 || y < 0 || x as usize >= self.w || y as usize >= self.h {
-            return;
-        }
-        let index = y as usize * self.w + x as usize;
-        let dst = self.buf[index];
-        let alpha = alpha as u32;
-        let inverse = 255 - alpha;
-        let r = (((color >> 16) & 0xff) * alpha + ((dst >> 16) & 0xff) * inverse) / 255;
-        let g = (((color >> 8) & 0xff) * alpha + ((dst >> 8) & 0xff) * inverse) / 255;
-        let b = ((color & 0xff) * alpha + (dst & 0xff) * inverse) / 255;
-        self.buf[index] = (r << 16) | (g << 8) | b;
-    }
-}
-
-const fn rgb(color: Rgb) -> u32 {
-    ((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32
 }
 
 #[cfg(windows)]

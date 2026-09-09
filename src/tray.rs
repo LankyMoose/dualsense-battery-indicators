@@ -3,7 +3,9 @@ use crate::app_log;
 use crate::autostart;
 use crate::battery::{self, ControllerStatus};
 use crate::color::{self, BatterySpectrum, color_for_battery_percent};
-use crate::configure_ui::{self, ConfigureAction, ConfigureSettings, ConfigureWindow};
+use crate::configure_ui::{
+    ConfigureAction, ConfigureSettings, ConfigureWindow, NotificationSetting,
+};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::{self, Preset};
 use crate::icon;
@@ -583,55 +585,29 @@ impl TrayApp {
         });
     }
 
-    #[cfg(windows)]
-    fn on_autostart_menu(&mut self) {
-        // muda toggles the checkmark before delivering the event; mirror that state.
-        let enable = self
-            .configure
-            .as_ref()
-            .map(|w| w.menu_bar().autostart.is_checked())
-            .unwrap_or_else(|| !autostart::is_enabled());
-        if let Err(err) = autostart::set_enabled(enable) {
-            app_log::error(format!("autostart toggle failed: {err}"));
-            self.sync_configure_settings();
-            return;
+    fn set_notification(&mut self, setting: NotificationSetting, enabled: bool) {
+        match setting {
+            NotificationSetting::Connect => self.prefs.notify_connect = enabled,
+            NotificationSetting::Low => self.prefs.notify_low = enabled,
+            NotificationSetting::Charged => self.prefs.notify_charged = enabled,
         }
+        self.prefs.save();
         self.sync_configure_settings();
     }
 
-    fn on_notify_low_menu(&mut self) {
-        // muda toggles the checkmark before delivering the event; mirror that state.
-        self.prefs.notify_low = self
-            .configure
-            .as_ref()
-            .map(|w| w.menu_bar().notify_low.is_checked())
-            .unwrap_or(!self.prefs.notify_low);
-        self.prefs.save();
-    }
-
-    fn on_notify_charged_menu(&mut self) {
-        self.prefs.notify_charged = self
-            .configure
-            .as_ref()
-            .map(|w| w.menu_bar().notify_charged.is_checked())
-            .unwrap_or(!self.prefs.notify_charged);
-        self.prefs.save();
-    }
-
-    fn on_notify_connect_menu(&mut self) {
-        self.prefs.notify_connect = self
-            .configure
-            .as_ref()
-            .map(|w| w.menu_bar().notify_connect.is_checked())
-            .unwrap_or(!self.prefs.notify_connect);
-        self.prefs.save();
-    }
-
-    fn on_toast_position_menu(&mut self, position: ToastPosition) {
+    fn set_toast_position(&mut self, position: ToastPosition) {
         self.prefs.toast_position = position;
         self.prefs.save();
         self.sync_configure_settings();
         self.show_position_preview();
+    }
+
+    #[cfg(windows)]
+    fn set_autostart(&mut self, enabled: bool) {
+        if let Err(err) = autostart::set_enabled(enabled) {
+            app_log::error(format!("autostart toggle failed: {err}"));
+        }
+        self.sync_configure_settings();
     }
 
     fn open_configure(&mut self, event_loop: &ActiveEventLoop) {
@@ -674,6 +650,14 @@ impl TrayApp {
         match action {
             ConfigureAction::None => {}
             ConfigureAction::ApplySpectrum(spectrum) => self.apply_spectrum(spectrum),
+            ConfigureAction::SetNotification(setting, enabled) => {
+                self.set_notification(setting, enabled)
+            }
+            ConfigureAction::SelectToastPosition(position) => self.set_toast_position(position),
+            #[cfg(windows)]
+            ConfigureAction::SetAutostart(enabled) => self.set_autostart(enabled),
+            #[cfg(feature = "dev-emulate")]
+            ConfigureAction::DeveloperPreset(preset) => self.apply_dev_preset(preset),
             ConfigureAction::Closed => {
                 self.configure = None;
             }
@@ -840,28 +824,10 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                     event_loop.exit();
                 } else if id == CONFIGURE_ID {
                     self.open_configure(event_loop);
-                } else if id == configure_ui::NOTIFY_LOW_ID {
-                    self.on_notify_low_menu();
-                } else if id == configure_ui::NOTIFY_CHARGED_ID {
-                    self.on_notify_charged_menu();
-                } else if id == configure_ui::NOTIFY_CONNECT_ID {
-                    self.on_notify_connect_menu();
-                } else if let Some(position) = configure_ui::toast_position_from_menu_id(id) {
-                    self.on_toast_position_menu(position);
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 } else if let Some(serial) = parse_remember_id(id) {
                     self.on_remember_menu(serial);
-                }
-                #[cfg(windows)]
-                if id == configure_ui::AUTOSTART_ID {
-                    self.on_autostart_menu();
-                }
-                #[cfg(feature = "dev-emulate")]
-                if self.dev_mode {
-                    if let Some(preset) = Preset::from_menu_id(id) {
-                        self.apply_dev_preset(preset);
-                    }
                 }
             }
         }

@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configure’s custom title bar is more compact.
 - The native right-click tray menu now contains only **Settings** and **Exit**; controller status and actions moved to the reusable dark popup.
 - Configure, controller popup, and toast spacing now comes from shared Taffy Flexbox layouts, design tokens, and measured text bounds instead of independent absolute coordinates; long labels are ellipsized and toast margins scale with monitor DPI.
-- Configure is now a compact single-column window with concise section headings, a corner-based toast-position diagram, and an inline color editor that expands from the spectrum preview. Configure and the controller popup now share the same compact header height and title treatment.
+- Configure is now a compact single-column window with concise section headings, a 16:9 toast-position stage with toast-shaped corner selectors, and an animated single-open accordion layout with a fixed height sized to its tallest panel. Configure and the controller popup now share the same compact header height and title treatment.
+- Lightbar colors now use an interactive 2–5 stop gradient editor that is always fully shown when the Lightbar accordion panel is active: select and drag stops along the spectrum, click empty bar areas to add stops, drag a stop away to remove it, and apply edits immediately (drag commits on mouse up). Legacy three-field spectrum prefs migrate automatically.
 
 ## [0.1.10] - 2026-08-30
 

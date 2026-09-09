@@ -139,7 +139,7 @@ fn run_app(
 
     let prefs = Prefs::load();
     let known = KnownControllers::load();
-    color::set_active_spectrum(prefs.spectrum);
+    color::set_active_spectrum(prefs.spectrum.clone());
     #[cfg(windows)]
     autostart::ensure_quiet_entry();
 
@@ -459,14 +459,16 @@ impl TrayApp {
     fn sync_controller_popup(&mut self) {
         let rows = self.popup_rows();
         if let Some(popup) = self.controller_popup.as_mut() {
-            popup.sync(rows, self.prefs.spectrum);
+            popup.sync(rows, self.prefs.spectrum.clone());
         }
     }
 
     fn queue_notifications(&mut self, events: Vec<NotifyEvent>) {
         for event in events {
-            self.toast_queue
-                .push_back(ToastMessage::from_notification(event, self.prefs.spectrum));
+            self.toast_queue.push_back(ToastMessage::from_notification(
+                event,
+                self.prefs.spectrum.clone(),
+            ));
         }
         self.show_next_toast();
     }
@@ -561,7 +563,7 @@ impl TrayApp {
             self.finish_toast();
         }
         self.toast_queue
-            .push_back(ToastMessage::preview(self.prefs.spectrum.full));
+            .push_back(ToastMessage::preview(self.prefs.spectrum.accent()));
         self.show_next_toast();
     }
 
@@ -657,7 +659,7 @@ impl TrayApp {
         match ConfigureWindow::open(
             event_loop,
             event_loop.owned_display_handle(),
-            self.prefs.spectrum,
+            self.prefs.spectrum.clone(),
             self.configure_settings(),
         ) {
             Ok(window) => self.configure = Some(window),
@@ -666,9 +668,9 @@ impl TrayApp {
     }
 
     fn apply_spectrum(&mut self, spectrum: BatterySpectrum) {
-        self.prefs.spectrum = spectrum;
+        self.prefs.spectrum = spectrum.clone();
         self.prefs.save();
-        color::set_active_spectrum(spectrum);
+        color::set_active_spectrum(spectrum.clone());
 
         for controller in &self.controllers {
             if is_emulated_serial(&controller.serial) {

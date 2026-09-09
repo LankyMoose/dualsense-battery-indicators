@@ -45,7 +45,7 @@ impl Default for Prefs {
             notify_connect: true,
             notify_disconnect: true,
             toast_position: ToastPosition::default(),
-            spectrum: BatterySpectrum::DEFAULT,
+            spectrum: BatterySpectrum::default_spectrum(),
         }
     }
 }
@@ -134,6 +134,19 @@ mod tests {
         .unwrap();
         assert_eq!(prefs.toast_position, ToastPosition::TopRight);
         assert!(prefs.notify_disconnect);
+    }
+
+    #[test]
+    fn legacy_spectrum_fields_migrate_on_load() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notify_low":true,"notify_charged":true,"notify_connect":true,"spectrum":{"full":{"r":1,"g":2,"b":3},"mid":{"r":4,"g":5,"b":6},"empty":{"r":7,"g":8,"b":9}}}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.spectrum.stops.len(), 3);
+        assert_eq!(prefs.spectrum.stops[0].percent, 100);
+        let encoded = serde_json::to_value(&prefs.spectrum).unwrap();
+        assert!(encoded.get("stops").is_some());
+        assert!(encoded.get("full").is_none());
     }
 
     #[test]

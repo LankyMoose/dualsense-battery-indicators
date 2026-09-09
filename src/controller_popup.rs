@@ -418,7 +418,7 @@ impl ControllerPopup {
             surface,
             font,
             rows: Vec::new(),
-            spectrum: BatterySpectrum::DEFAULT,
+            spectrum: BatterySpectrum::default_spectrum(),
             cursor: None,
             anchor: None,
             scroll: 0,
@@ -569,7 +569,7 @@ impl ControllerPopup {
         let width = NonZeroU32::new(size.width.max(1)).unwrap();
         let height = NonZeroU32::new(size.height.max(1)).unwrap();
         let rows = self.rows.clone();
-        let spectrum = self.spectrum;
+        let spectrum = self.spectrum.clone();
         let cursor = self.cursor;
         let scroll = self.scroll;
         let visible_count = rows.len().min(MAX_VISIBLE_ROWS);
@@ -589,7 +589,7 @@ impl ControllerPopup {
             &self.font,
         );
         fb.clear(ui::BG);
-        Self::paint_header(&mut fb, &layout, spectrum, cursor, rows.len(), scroll);
+        Self::paint_header(&mut fb, &layout, &spectrum, cursor, rows.len(), scroll);
         if rows.is_empty() {
             fb.text_in_rect(
                 layout.empty_title.unwrap_or_default(),
@@ -614,7 +614,7 @@ impl ControllerPopup {
                     &mut fb,
                     &layout.rows[visible_index],
                     &rows[row_index],
-                    spectrum,
+                    &spectrum,
                     cursor,
                 );
             }
@@ -625,7 +625,7 @@ impl ControllerPopup {
     fn paint_header(
         fb: &mut Framebuffer<'_>,
         layout: &PopupLayout,
-        spectrum: BatterySpectrum,
+        spectrum: &BatterySpectrum,
         cursor: Option<(f64, f64)>,
         row_count: usize,
         scroll: usize,
@@ -642,13 +642,13 @@ impl ControllerPopup {
             layout.header.y,
             layout::SPACE_1,
             layout.header.h,
-            ui::rgb_of(spectrum.full),
+            ui::rgb_of(spectrum.accent()),
         );
         fb.icon(
             layout.icon.x,
             layout.icon.y,
             layout.icon.w.min(layout.icon.h),
-            spectrum.full,
+            spectrum.accent(),
         );
         fb.text_in_rect(
             layout.title,
@@ -689,7 +689,7 @@ impl ControllerPopup {
         fb: &mut Framebuffer<'_>,
         layout: &PopupRowLayout,
         row: &ControllerRow,
-        spectrum: BatterySpectrum,
+        spectrum: &BatterySpectrum,
         cursor: Option<(f64, f64)>,
     ) {
         let rect = layout.bounds;

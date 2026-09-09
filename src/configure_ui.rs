@@ -5,15 +5,13 @@ use crate::color::{BatterySpectrum, Rgb, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::Preset;
 use crate::prefs::ToastPosition;
-use crate::ui::layout::{self, LayoutTree, Rect};
+use crate::ui::layout::{self, Rect};
 use crate::ui::{self, Framebuffer};
 use fontdue::Font;
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Size, Style,
-};
+use std::time::{Duration, Instant};
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
@@ -26,7 +24,24 @@ use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
 const WIN_W: f64 = 320.0;
 const FONT_HEADING: f32 = 15.0;
 const FONT_BODY: f32 = 12.0;
+#[cfg(not(windows))]
 const FONT_SMALL: f32 = 10.5;
+const ACCORDION_HEADER_H: f64 = 22.0;
+const ACCORDION_GAP: f64 = 6.0;
+const ACCORDION_ANIM_MS: u64 = 180;
+const HEADER_TITLE_PAD_X: f64 = 12.0;
+const CONTENT_PAD_X: f64 = 12.0;
+const CONTENT_PAD_Y: f64 = 8.0;
+const PREVIEW_H: f64 = 72.0;
+const PICKER_H: f64 = 146.0;
+const RESET_H: f64 = 32.0;
+const SYSTEM_ROW_H: f64 = 32.0;
+const NOTIFICATION_ROW_H: f64 = 28.0;
+/// Matches the real toast window (`toast.rs` WIDTH / HEIGHT).
+const TOAST_ASPECT: f64 = 360.0 / 88.0;
+const POSITION_TOAST_W: f64 = 56.0;
+const POSITION_TOAST_MARGIN: f64 = 8.0;
+const POSITION_STAGE_DARK: u32 = ui::rgb(15, 17, 22);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationSetting {
@@ -60,37 +75,72 @@ pub struct ConfigureSettings {
     pub show_developer: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stop {
-    Full,
-    Mid,
-    Empty,
+#[derive(Debug, Clone, Copy)]
+enum DragKind {
+    Sv,
+    Hue,
+    Stop { index: usize },
 }
 
-impl Stop {
-    const ALL: [Self; 3] = [Self::Full, Self::Mid, Self::Empty];
+const STOP_HANDLE_W: f64 = 18.0;
+const STOP_HANDLE_H: f64 = 28.0;
+const STOP_REMOVE_DISTANCE: f64 = 28.0;
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Full => "Full",
-            Self::Mid => "Mid",
-            Self::Empty => "Empty",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccordionSection {
+    System,
+    Notifications,
+    ToastPosition,
+    LightbarColors,
+    #[cfg(feature = "dev-emulate")]
+    Developer,
+}
+
+impl AccordionSection {
+    fn visible(show_developer: bool) -> Vec<Self> {
+        let sections = vec![
+            Self::System,
+            Self::Notifications,
+            Self::ToastPosition,
+            Self::LightbarColors,
+        ];
+        #[cfg(not(feature = "dev-emulate"))]
+        let _ = show_developer;
+        #[cfg(feature = "dev-emulate")]
+        let mut sections = sections;
+        #[cfg(feature = "dev-emulate")]
+        if show_developer {
+            sections.push(Self::Developer);
         }
+        sections
     }
 
-    fn percent(self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
-            Self::Full => "100%",
-            Self::Mid => "50%",
-            Self::Empty => "0%",
+            Self::System => "System",
+            Self::Notifications => "Notifications",
+            Self::ToastPosition => "Toast position",
+            Self::LightbarColors => "Lightbar colors",
+            #[cfg(feature = "dev-emulate")]
+            Self::Developer => "Developer",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum DragKind {
-    Sv,
-    Hue,
+struct AccordionAnimation {
+    from: AccordionSection,
+    to: AccordionSection,
+    started_at: Instant,
+}
+
+impl AccordionAnimation {
+    fn progress(self) -> f64 {
+        let elapsed = self.started_at.elapsed().as_secs_f64();
+        let raw =
+            (elapsed / Duration::from_millis(ACCORDION_ANIM_MS).as_secs_f64()).clamp(0.0, 1.0);
+        1.0 - (1.0 - raw).powi(3)
+    }
 }
 
 pub struct ConfigureWindow {
@@ -99,38 +149,64 @@ pub struct ConfigureWindow {
     font: Font,
     settings: ConfigureSettings,
     draft: BatterySpectrum,
-    selected: Stop,
+    selected: usize,
     hue: f32,
     sat: f32,
     val: f32,
     drag: Option<DragKind>,
+    remove_armed: bool,
+    pending_commit: bool,
     cursor: Option<(f64, f64)>,
-    dirty: bool,
-    picker_open: bool,
+    expanded_section: AccordionSection,
+    accordion_anim: Option<AccordionAnimation>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PaintState {
     settings: ConfigureSettings,
     draft: BatterySpectrum,
-    selected: Stop,
+    selected: usize,
     hue: f32,
     sat: f32,
     val: f32,
     cursor: Option<(f64, f64)>,
-    dirty: bool,
+    remove_armed: bool,
+    dragging_stop: Option<usize>,
+    expanded_section: AccordionSection,
+    accordion_anim: Option<AccordionAnimation>,
 }
 
 impl PaintState {
-    fn color_of(self, stop: Stop) -> Rgb {
-        match stop {
-            Stop::Full => self.draft.full,
-            Stop::Mid => self.draft.mid,
-            Stop::Empty => self.draft.empty,
+    fn selected_stop(&self) -> Option<&crate::color::GradientStop> {
+        self.draft.stops.get(self.selected)
+    }
+
+    fn accent(&self) -> Rgb {
+        self.draft.accent()
+    }
+
+    fn section_amount(&self, section: AccordionSection) -> f64 {
+        match self.accordion_anim {
+            Some(anim) => {
+                let progress = anim.progress();
+                if section == anim.from {
+                    1.0 - progress
+                } else if section == anim.to {
+                    progress
+                } else {
+                    0.0
+                }
+            }
+            None => (section == self.expanded_section) as u8 as f64,
         }
     }
 
-    fn notification_enabled(self, setting: NotificationSetting) -> bool {
+    fn is_animating(&self) -> bool {
+        self.accordion_anim
+            .is_some_and(|anim| anim.progress() < 1.0)
+    }
+
+    fn notification_enabled(&self, setting: NotificationSetting) -> bool {
         match setting {
             NotificationSetting::Connect => self.settings.notify_connect,
             NotificationSetting::Disconnect => self.settings.notify_disconnect,
@@ -147,337 +223,274 @@ struct ConfigureLayout {
     title_label: Rect,
     minimize: Rect,
     close: Rect,
-    notifications_heading: Rect,
+    sections: Vec<SectionLayout>,
     notification_rows: [Rect; 4],
     notification_labels: [Rect; 4],
     notification_switches: [Rect; 4],
-    position_heading: Rect,
+    position_stage: Rect,
     position_choices: [Rect; 4],
-    system_heading: Rect,
     autostart_row: Rect,
     autostart_label: Rect,
     autostart_switch: Rect,
-    editor_heading: Rect,
     preview: Rect,
     spectrum_bar: Rect,
-    stops: [StopLayout; 3],
     picker: Rect,
     picker_label: Rect,
     sv: Rect,
     hue: Rect,
     reset: Rect,
-    apply: Rect,
-    picker_open: bool,
     height: f64,
-    separators: Vec<Rect>,
-    #[cfg(feature = "dev-emulate")]
-    developer_heading: Option<Rect>,
     #[cfg(feature = "dev-emulate")]
     developer_buttons: Vec<Rect>,
 }
 
 #[derive(Clone, Copy)]
-struct StopLayout {
+struct StopHandleLayout {
     bounds: Rect,
+    tip: (f64, f64),
     swatch: Rect,
-    label: Rect,
-    percent: Rect,
-    hex: Rect,
 }
 
-type StopNodes = (NodeId, NodeId, NodeId, NodeId, NodeId);
+#[derive(Clone, Copy)]
+struct SectionLayout {
+    section: AccordionSection,
+    header: Rect,
+    content: Rect,
+    full_height: f64,
+    visible_height: f64,
+}
 
 impl ConfigureLayout {
-    fn compute(font: &Font, picker_open: bool, show_developer: bool) -> Result<Self, String> {
-        let mut tree = LayoutTree::new();
-        let title_icon = tree.leaf(fixed_style(
-            Some(layout::WINDOW_HEADER_ICON_SIZE),
-            Some(layout::WINDOW_HEADER_ICON_SIZE),
-            0.0,
-        ))?;
-        let title_label = tree.text(
-            DISPLAY_NAME,
-            layout::WINDOW_HEADER_TITLE_SIZE,
-            Style {
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                ..fixed_style(None, Some(layout::WINDOW_HEADER_ACTION_SIZE), 0.0)
-            },
-        )?;
-        let title_space = tree.leaf(fixed_style(
-            None,
-            Some(layout::WINDOW_HEADER_ACTION_SIZE),
-            1.0,
-        ))?;
-        let drag = tree.container(
-            Style {
-                align_items: Some(AlignItems::CENTER),
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                padding: taffy::geometry::Rect {
-                    left: LengthPercentage::length(layout::SPACE_3 as f32),
-                    right: LengthPercentage::length(0.0),
-                    top: LengthPercentage::length(layout::SPACE_1 as f32),
-                    bottom: LengthPercentage::length(layout::SPACE_1 as f32),
-                },
-                gap: Size {
-                    width: LengthPercentage::length(layout::WINDOW_HEADER_PADDING as f32),
-                    height: LengthPercentage::length(0.0),
-                },
-                ..row_style(None, Some(layout::WINDOW_HEADER_HEIGHT), 0.0, 1.0)
-            },
-            &[title_icon, title_label, title_space],
-        )?;
-        let minimize = tree.leaf(fixed_style(
-            Some(layout::WINDOW_HEADER_ACTION_SIZE),
-            Some(layout::WINDOW_HEADER_ACTION_SIZE),
-            0.0,
-        ))?;
-        let close = tree.leaf(fixed_style(
-            Some(layout::WINDOW_HEADER_ACTION_SIZE),
-            Some(layout::WINDOW_HEADER_ACTION_SIZE),
-            0.0,
-        ))?;
-        let title_actions = tree.container(
-            Style {
-                align_items: Some(AlignItems::CENTER),
-                gap: Size {
-                    width: LengthPercentage::length(layout::SPACE_1 as f32),
-                    height: LengthPercentage::length(0.0),
-                },
-                padding: layout::points(layout::SPACE_1),
-                ..row_style(None, Some(layout::WINDOW_HEADER_HEIGHT), 0.0, 0.0)
-            },
-            &[minimize, close],
-        )?;
-        let title = tree.container(
-            row_style(Some(WIN_W), Some(layout::WINDOW_HEADER_HEIGHT), 0.0, 0.0),
-            &[drag, title_actions],
-        )?;
+    fn compute(state: &PaintState, show_developer: bool) -> Self {
+        let title_drag = Rect::new(
+            layout::SPACE_3,
+            layout::SPACE_1,
+            WIN_W
+                - layout::SPACE_3
+                - (layout::WINDOW_HEADER_ACTION_SIZE * 2.0 + layout::SPACE_1 * 3.0),
+            layout::WINDOW_HEADER_HEIGHT,
+        );
+        let title_icon = Rect::new(
+            title_drag.x,
+            layout::SPACE_1 + 4.0,
+            layout::WINDOW_HEADER_ICON_SIZE,
+            layout::WINDOW_HEADER_ICON_SIZE,
+        );
+        let title_label = Rect::new(
+            title_icon.right() + layout::WINDOW_HEADER_PADDING,
+            layout::SPACE_1,
+            title_drag.right() - title_icon.right() - layout::WINDOW_HEADER_PADDING,
+            layout::WINDOW_HEADER_HEIGHT - layout::SPACE_1 * 2.0,
+        );
+        let minimize = Rect::new(
+            WIN_W - layout::WINDOW_HEADER_ACTION_SIZE * 2.0 - layout::SPACE_1 * 2.0,
+            layout::SPACE_1,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+        );
+        let close = Rect::new(
+            WIN_W - layout::WINDOW_HEADER_ACTION_SIZE - layout::SPACE_1,
+            layout::SPACE_1,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+        );
 
-        let notifications_heading = compact_heading_node(&mut tree, "Notifications")?;
-        let notification_parts = [
-            toggle_row(&mut tree, "Controller connected", 29.0)?,
-            toggle_row(&mut tree, "Controller disconnected", 29.0)?,
-            toggle_row(&mut tree, "Low battery", 29.0)?,
-            toggle_row(&mut tree, "Fully charged", 29.0)?,
-        ];
-        let notification_rows = notification_parts.map(|part| part.0);
-        let notifications_card = tree.container(
-            column_style(None, Some(116.0), 0.0, 0.0),
-            &notification_rows,
-        )?;
-        let notifications_section = tree.container(
-            column_style(None, None, layout::SPACE_1, 0.0),
-            &[notifications_heading, notifications_card],
-        )?;
+        let sections = AccordionSection::visible(show_developer);
+        let content_x = 0.0;
+        let content_w = WIN_W;
+        let base_height = layout::WINDOW_HEADER_HEIGHT
+            + sections.len() as f64 * ACCORDION_HEADER_H
+            + (sections.len().saturating_sub(1)) as f64 * ACCORDION_GAP;
+        let max_panel_h = sections
+            .iter()
+            .map(|section| section_full_height(*section))
+            .fold(0.0, f64::max);
+        let window_h = base_height + max_panel_h;
 
-        let position_heading = compact_heading_node(&mut tree, "Toast position")?;
-        let position_choices = [
-            tree.leaf(fixed_style(Some(64.0), Some(36.0), 0.0))?,
-            tree.leaf(fixed_style(Some(64.0), Some(36.0), 0.0))?,
-            tree.leaf(fixed_style(Some(64.0), Some(36.0), 0.0))?,
-            tree.leaf(fixed_style(Some(64.0), Some(36.0), 0.0))?,
-        ];
-        let position_top = tree.container(
-            row_style(Some(132.0), Some(36.0), layout::SPACE_1, 0.0),
-            &position_choices[..2],
-        )?;
-        let position_bottom = tree.container(
-            row_style(Some(132.0), Some(36.0), layout::SPACE_1, 0.0),
-            &position_choices[2..],
-        )?;
-        let position_card = tree.container(
-            Style {
-                align_items: Some(AlignItems::CENTER),
-                justify_content: Some(taffy::prelude::JustifyContent::CENTER),
-                gap: Size {
-                    width: LengthPercentage::length(0.0),
-                    height: LengthPercentage::length(layout::SPACE_1 as f32),
-                },
-                ..column_style(None, Some(76.0), 0.0, 0.0)
-            },
-            &[position_top, position_bottom],
-        )?;
-        let position_section = tree.container(
-            column_style(None, None, layout::SPACE_1, 0.0),
-            &[position_heading, position_card],
-        )?;
-        let position_row =
-            tree.container(row_style(None, Some(98.0), 0.0, 0.0), &[position_section])?;
-
-        let editor_heading = compact_heading_node(&mut tree, "Lightbar colors")?;
-        let spectrum_bar = tree.leaf(fixed_style(None, Some(24.0), 1.0))?;
-        let preview = tree.container(
-            Style {
-                align_items: Some(AlignItems::CENTER),
-                padding: layout::points(layout::SPACE_3),
-                ..row_style(None, Some(48.0), 0.0, 0.0)
-            },
-            &[spectrum_bar],
-        )?;
-
-        let stop_parts = [
-            compact_stop_node(&mut tree, "Full", "100%")?,
-            compact_stop_node(&mut tree, "Mid", "50%")?,
-            compact_stop_node(&mut tree, "Empty", "0%")?,
-        ];
-        let stops = stop_parts.map(|part| part.0);
-        let stop_row = tree.container(row_style(None, Some(54.0), layout::SPACE_2, 0.0), &stops)?;
-        let picker_heading = tree.text(
-            "Editing battery stop",
-            FONT_BODY,
-            fixed_style(None, Some(18.0), 0.0),
-        )?;
-        let sv = tree.leaf(fixed_style(None, Some(100.0), 1.0))?;
-        let hue = tree.leaf(fixed_style(Some(18.0), Some(100.0), 0.0))?;
-        let picker_controls =
-            tree.container(row_style(None, Some(100.0), 10.0, 0.0), &[sv, hue])?;
-        let picker = tree.container(
-            column_style(None, Some(146.0), layout::SPACE_1, 10.0),
-            &[picker_heading, picker_controls],
-        )?;
-        let reset = tree.leaf(fixed_style(Some(124.0), Some(32.0), 0.0))?;
-        let action_space = tree.leaf(fixed_style(None, Some(32.0), 1.0))?;
-        let apply = tree.leaf(fixed_style(Some(92.0), Some(32.0), 0.0))?;
-        let actions = tree.container(
-            row_style(None, Some(32.0), 0.0, 0.0),
-            &[reset, action_space, apply],
-        )?;
-        let editor_summary = tree.container(
-            column_style(None, Some(70.0), layout::SPACE_1, 0.0),
-            &[editor_heading, preview],
-        )?;
-        let editor_details = tree.container(
-            column_style(None, None, 6.0, 0.0),
-            &[stop_row, picker, actions],
-        )?;
-
-        let system_heading = compact_heading_node(&mut tree, "System")?;
-        let (autostart_row, autostart_label, autostart_switch) =
-            toggle_row(&mut tree, "Start with Windows", 40.0)?;
-        let system_card =
-            tree.container(column_style(None, Some(40.0), 0.0, 0.0), &[autostart_row])?;
-        let system_section = tree.container(
-            column_style(None, None, layout::SPACE_1, 0.0),
-            &[system_heading, system_card],
-        )?;
-
-        let separator_one = tree.leaf(fixed_style(None, Some(1.0), 0.0))?;
-        let separator_two = tree.leaf(fixed_style(None, Some(1.0), 0.0))?;
-        let separator_three = tree.leaf(fixed_style(None, Some(1.0), 0.0))?;
-        let separators = vec![separator_one, separator_two, separator_three];
-        let mut body_children = vec![
-            system_section,
-            separator_one,
-            notifications_section,
-            separator_two,
-            position_row,
-            separator_three,
-            editor_summary,
-        ];
-        if picker_open {
-            body_children.push(editor_details);
+        let mut y = layout::WINDOW_HEADER_HEIGHT;
+        let mut section_layouts = Vec::new();
+        for (index, section) in sections.iter().copied().enumerate() {
+            let header = Rect::new(content_x, y, content_w, ACCORDION_HEADER_H);
+            y += ACCORDION_HEADER_H;
+            let full_height = section_full_height(section);
+            let visible_height = full_height * state.section_amount(section);
+            let content = Rect::new(content_x, y, content_w, full_height);
+            section_layouts.push(SectionLayout {
+                section,
+                header,
+                content,
+                full_height,
+                visible_height,
+            });
+            y += visible_height;
+            if index + 1 < sections.len() {
+                y += ACCORDION_GAP;
+            }
         }
+
+        let notifications = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::Notifications)
+            .copied()
+            .unwrap();
+        let system = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::System)
+            .copied()
+            .unwrap();
+        let position = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::ToastPosition)
+            .copied()
+            .unwrap();
+        let lightbar = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::LightbarColors)
+            .copied()
+            .unwrap();
+
+        let notification_rows = std::array::from_fn(|index| {
+            Rect::new(
+                notifications.content.x + CONTENT_PAD_X,
+                notifications.content.y + CONTENT_PAD_Y + index as f64 * NOTIFICATION_ROW_H,
+                notifications.content.w - CONTENT_PAD_X * 2.0,
+                NOTIFICATION_ROW_H,
+            )
+        });
+        let notification_labels =
+            notification_rows.map(|row| Rect::new(row.x, row.y, row.w - 46.0, row.h));
+        let notification_switches = notification_rows
+            .map(|row| Rect::new(row.right() - 38.0, row.y + (row.h - 20.0) / 2.0, 38.0, 20.0));
+
+        let system_row = Rect::new(
+            system.content.x + CONTENT_PAD_X,
+            system.content.y + CONTENT_PAD_Y,
+            system.content.w - CONTENT_PAD_X * 2.0,
+            SYSTEM_ROW_H,
+        );
+        let system_label = Rect::new(
+            system_row.x,
+            system_row.y,
+            system_row.w - 46.0,
+            system_row.h,
+        );
+        let system_switch = Rect::new(
+            system_row.right() - 38.0,
+            system_row.y + (system_row.h - 20.0) / 2.0,
+            38.0,
+            20.0,
+        );
+
+        let position_stage = position_stage_rect(position.content);
+        let toast_h = POSITION_TOAST_W / TOAST_ASPECT;
+        let position_choices = [
+            Rect::new(
+                position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.y + POSITION_TOAST_MARGIN,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.right() - POSITION_TOAST_MARGIN - POSITION_TOAST_W,
+                position_stage.y + POSITION_TOAST_MARGIN,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.right() - POSITION_TOAST_MARGIN - POSITION_TOAST_W,
+                position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+        ];
+
+        let preview = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            lightbar.content.y + CONTENT_PAD_Y,
+            lightbar.content.w - CONTENT_PAD_X * 2.0,
+            PREVIEW_H,
+        );
+        let spectrum_bar = Rect::new(
+            preview.x + CONTENT_PAD_X,
+            preview.y + CONTENT_PAD_X,
+            preview.w - CONTENT_PAD_X * 2.0,
+            24.0,
+        );
+        let picker = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            preview.bottom() + ACCORDION_GAP,
+            lightbar.content.w - CONTENT_PAD_X * 2.0,
+            PICKER_H,
+        );
+        let picker_label = Rect::new(picker.x + 12.0, picker.y + 10.0, picker.w - 24.0, 18.0);
+        let sv = Rect::new(picker.x + 12.0, picker.y + 34.0, picker.w - 52.0, 100.0);
+        let hue = Rect::new(picker.right() - 30.0, picker.y + 34.0, 18.0, 100.0);
+        let reset = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            picker.bottom() + ACCORDION_GAP,
+            124.0,
+            RESET_H,
+        );
+
         #[cfg(feature = "dev-emulate")]
-        let (developer_heading_node, developer_button_nodes, developer_separator_node) =
-            if show_developer {
-                let heading = compact_heading_node(&mut tree, "Developer")?;
+        let developer_buttons = {
+            if let Some(dev) = section_layouts
+                .iter()
+                .find(|layout| layout.section == AccordionSection::Developer)
+                .copied()
+            {
                 let mut buttons = Vec::new();
-                let mut rows = Vec::new();
-                for count in [4, 4] {
-                    let mut row_buttons = Vec::new();
-                    for _ in 0..count {
-                        let button = tree.leaf(fixed_style(None, Some(30.0), 1.0))?;
-                        buttons.push(button);
-                        row_buttons.push(button);
+                let inner_w = dev.content.w - CONTENT_PAD_X * 2.0;
+                let bw = (inner_w - layout::SPACE_2 * 3.0) / 4.0;
+                let by = dev.content.y + CONTENT_PAD_Y;
+                for row in 0..2 {
+                    for col in 0..4 {
+                        buttons.push(Rect::new(
+                            dev.content.x + CONTENT_PAD_X + col as f64 * (bw + layout::SPACE_2),
+                            by + row as f64 * (30.0 + 5.0),
+                            bw,
+                            30.0,
+                        ));
                     }
-                    rows.push(tree.container(
-                        row_style(None, Some(30.0), layout::SPACE_2, 0.0),
-                        &row_buttons,
-                    )?);
                 }
-                let section = tree.container(
-                    column_style(None, Some(88.0), 5.0, 0.0),
-                    &[heading, rows[0], rows[1]],
-                )?;
-                let separator = tree.leaf(fixed_style(None, Some(1.0), 0.0))?;
-                body_children.extend([separator, section]);
-                (Some(heading), buttons, Some(separator))
+                buttons
             } else {
-                (None, Vec::new(), None)
-            };
-        #[cfg(feature = "dev-emulate")]
-        let separators = separators
-            .into_iter()
-            .chain(developer_separator_node)
-            .collect::<Vec<_>>();
-        #[cfg(not(feature = "dev-emulate"))]
-        let _ = show_developer;
+                Vec::new()
+            }
+        };
 
-        let body = tree.container(
-            Style {
-                padding: layout::points(10.0),
-                gap: Size {
-                    width: LengthPercentage::length(0.0),
-                    height: LengthPercentage::length(6.0),
-                },
-                ..column_style(Some(WIN_W), None, 0.0, 0.0)
-            },
-            &body_children,
-        )?;
-        let root = tree.container(column_style(Some(WIN_W), None, 0.0, 0.0), &[title, body])?;
-        tree.compute(root, WIN_W, None, font)?;
-        let root_rect = tree.rect(root)?;
-
-        Ok(Self {
-            title_drag: tree.rect(drag)?,
-            title_icon: tree.rect(title_icon)?,
-            title_label: tree.rect(title_label)?,
-            minimize: tree.rect(minimize)?,
-            close: tree.rect(close)?,
-            notifications_heading: tree.rect(notifications_heading)?,
-            notification_rows: rect_array(&tree, notification_rows)?,
-            notification_labels: rect_array(&tree, notification_parts.map(|part| part.1))?,
-            notification_switches: rect_array(&tree, notification_parts.map(|part| part.2))?,
-            position_heading: tree.rect(position_heading)?,
-            position_choices: rect_array(&tree, position_choices)?,
-            system_heading: tree.rect(system_heading)?,
-            autostart_row: tree.rect(autostart_row)?,
-            autostart_label: tree.rect(autostart_label)?,
-            autostart_switch: tree.rect(autostart_switch)?,
-            editor_heading: tree.rect(editor_heading)?,
-            preview: tree.rect(preview)?,
-            spectrum_bar: tree.rect(spectrum_bar)?,
-            stops: stop_layout_array(&tree, stop_parts)?,
-            picker: tree.rect(picker)?,
-            picker_label: tree.rect(picker_heading)?,
-            sv: tree.rect(sv)?,
-            hue: tree.rect(hue)?,
-            reset: tree.rect(reset)?,
-            apply: tree.rect(apply)?,
-            picker_open,
-            height: root_rect.h,
-            separators: separators
-                .into_iter()
-                .map(|node| tree.rect(node))
-                .collect::<Result<_, _>>()?,
+        Self {
+            title_drag,
+            title_icon,
+            title_label,
+            minimize,
+            close,
+            sections: section_layouts,
+            notification_rows,
+            notification_labels,
+            notification_switches,
+            position_stage,
+            position_choices,
+            autostart_row: system_row,
+            autostart_label: system_label,
+            autostart_switch: system_switch,
+            preview,
+            spectrum_bar,
+            picker,
+            picker_label,
+            sv,
+            hue,
+            reset,
+            height: window_h,
             #[cfg(feature = "dev-emulate")]
-            developer_heading: developer_heading_node
-                .map(|node| tree.rect(node))
-                .transpose()?,
-            #[cfg(feature = "dev-emulate")]
-            developer_buttons: developer_button_nodes
-                .into_iter()
-                .map(|node| tree.rect(node))
-                .collect::<Result<_, _>>()?,
-        })
+            developer_buttons,
+        }
     }
 
     fn notification_row(&self, setting: NotificationSetting) -> Rect {
@@ -488,158 +501,94 @@ impl ConfigureLayout {
         self.position_choices[position_index(position)]
     }
 
-    fn stop(&self, stop: Stop) -> Rect {
-        self.stops[stop_index(stop)].bounds
+    #[cfg(test)]
+    fn section(&self, section: AccordionSection) -> SectionLayout {
+        self.sections
+            .iter()
+            .find(|layout| layout.section == section)
+            .copied()
+            .unwrap_or(SectionLayout {
+                section,
+                header: Rect::default(),
+                content: Rect::default(),
+                full_height: 0.0,
+                visible_height: 0.0,
+            })
+    }
+
+    fn stop_handles_for(&self, spectrum: &BatterySpectrum) -> Vec<StopHandleLayout> {
+        spectrum
+            .stops
+            .iter()
+            .map(|stop| stop_handle_layout(self.spectrum_bar, stop.percent))
+            .collect()
     }
 }
 
-fn rect_array<const N: usize>(
-    tree: &LayoutTree,
-    nodes: [taffy::prelude::NodeId; N],
-) -> Result<[Rect; N], String> {
-    let mut rects = [Rect::default(); N];
-    for (index, node) in nodes.into_iter().enumerate() {
-        rects[index] = tree.rect(node)?;
+fn percent_from_bar_x(bar: Rect, x: f64) -> u8 {
+    if bar.w <= 0.0 {
+        return 100;
     }
-    Ok(rects)
+    let t = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
+    (100.0 - t * 100.0).round() as u8
 }
 
-fn stop_layout_array(tree: &LayoutTree, nodes: [StopNodes; 3]) -> Result<[StopLayout; 3], String> {
-    let mut layouts = [StopLayout {
-        bounds: Rect::default(),
-        swatch: Rect::default(),
-        label: Rect::default(),
-        percent: Rect::default(),
-        hex: Rect::default(),
-    }; 3];
-    for (index, (bounds, swatch, label, percent, hex)) in nodes.into_iter().enumerate() {
-        layouts[index] = StopLayout {
-            bounds: tree.rect(bounds)?,
-            swatch: tree.rect(swatch)?,
-            label: tree.rect(label)?,
-            percent: tree.rect(percent)?,
-            hex: tree.rect(hex)?,
-        };
-    }
-    Ok(layouts)
+fn bar_x_from_percent(bar: Rect, percent: u8) -> f64 {
+    bar.x + (1.0 - percent.min(100) as f64 / 100.0) * bar.w
 }
 
-fn fixed_style(width: Option<f64>, height: Option<f64>, grow: f32) -> Style {
-    Style {
-        size: Size {
-            width: width.map_or(Dimension::auto(), |value| Dimension::length(value as f32)),
-            height: height.map_or(Dimension::auto(), |value| Dimension::length(value as f32)),
-        },
-        flex_grow: grow,
-        flex_shrink: 0.0,
-        ..Default::default()
+fn stop_handle_rect(bar: Rect, percent: u8) -> Rect {
+    let cx = bar_x_from_percent(bar, percent);
+    Rect::new(
+        cx - STOP_HANDLE_W / 2.0,
+        bar.bottom() + 2.0,
+        STOP_HANDLE_W,
+        STOP_HANDLE_H,
+    )
+}
+
+fn stop_handle_layout(bar: Rect, percent: u8) -> StopHandleLayout {
+    let bounds = stop_handle_rect(bar, percent);
+    let cx = bounds.x + bounds.w / 2.0;
+    StopHandleLayout {
+        bounds,
+        tip: (cx, bar.bottom()),
+        swatch: Rect::new(bounds.x + 3.0, bounds.y + 10.0, 12.0, 12.0),
     }
 }
 
-fn row_style(width: Option<f64>, height: Option<f64>, gap: f64, grow: f32) -> Style {
-    Style {
-        display: Display::Flex,
-        flex_direction: FlexDirection::Row,
-        align_items: Some(AlignItems::STRETCH),
-        gap: Size {
-            width: LengthPercentage::length(gap as f32),
-            height: LengthPercentage::length(0.0),
-        },
-        ..fixed_style(width, height, grow)
+fn section_full_height(section: AccordionSection) -> f64 {
+    match section {
+        AccordionSection::System => CONTENT_PAD_Y * 2.0 + SYSTEM_ROW_H,
+        AccordionSection::Notifications => {
+            CONTENT_PAD_Y * 2.0 + NOTIFICATION_ROW_H * 4.0
+        }
+        AccordionSection::ToastPosition => {
+            let stage = position_stage_rect(Rect::new(0.0, 0.0, WIN_W, 0.0));
+            CONTENT_PAD_Y * 2.0 + stage.h
+        }
+        AccordionSection::LightbarColors => {
+            CONTENT_PAD_Y * 2.0
+                + PREVIEW_H
+                + ACCORDION_GAP
+                + PICKER_H
+                + ACCORDION_GAP
+                + RESET_H
+        }
+        #[cfg(feature = "dev-emulate")]
+        AccordionSection::Developer => CONTENT_PAD_Y * 2.0 + 65.0,
     }
 }
 
-fn column_style(width: Option<f64>, height: Option<f64>, gap: f64, padding: f64) -> Style {
-    Style {
-        display: Display::Flex,
-        flex_direction: FlexDirection::Column,
-        gap: Size {
-            width: LengthPercentage::length(0.0),
-            height: LengthPercentage::length(gap as f32),
-        },
-        padding: layout::points(padding),
-        ..fixed_style(width, height, 0.0)
-    }
-}
-
-fn compact_heading_node(tree: &mut LayoutTree, text: &str) -> Result<NodeId, String> {
-    tree.text(text, FONT_HEADING, fixed_style(None, Some(18.0), 0.0))
-}
-
-fn toggle_row(
-    tree: &mut LayoutTree,
-    label: &str,
-    height: f64,
-) -> Result<(NodeId, NodeId, NodeId), String> {
-    let label = tree.text(
-        label,
-        FONT_BODY,
-        Style {
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::auto(),
-            },
-            flex_basis: Dimension::length(0.0),
-            ..fixed_style(None, Some(height), 1.0)
-        },
-    )?;
-    let switch = tree.leaf(fixed_style(Some(38.0), Some(20.0), 0.0))?;
-    let row = tree.container(
-        Style {
-            align_items: Some(AlignItems::CENTER),
-            padding: taffy::geometry::Rect {
-                left: LengthPercentage::length(layout::SPACE_3 as f32),
-                right: LengthPercentage::length(10.0),
-                top: LengthPercentage::length(0.0),
-                bottom: LengthPercentage::length(0.0),
-            },
-            gap: Size {
-                width: LengthPercentage::length(layout::SPACE_2 as f32),
-                height: LengthPercentage::length(0.0),
-            },
-            ..row_style(None, Some(height), 0.0, 0.0)
-        },
-        &[label, switch],
-    )?;
-    Ok((row, label, switch))
-}
-
-fn compact_stop_node(
-    tree: &mut LayoutTree,
-    label: &str,
-    percent: &str,
-) -> Result<StopNodes, String> {
-    let swatch = tree.leaf(fixed_style(Some(26.0), Some(26.0), 0.0))?;
-    let label_node = tree.text(label, FONT_BODY, fixed_style(None, Some(13.0), 0.0))?;
-    let percent_node = tree.text(percent, FONT_SMALL, fixed_style(None, Some(13.0), 0.0))?;
-    let labels = tree.container(
-        column_style(None, Some(26.0), 0.0, 0.0),
-        &[label_node, percent_node],
-    )?;
-    let header = tree.container(
-        Style {
-            gap: Size {
-                width: LengthPercentage::length(layout::SPACE_2 as f32),
-                height: LengthPercentage::length(0.0),
-            },
-            ..row_style(None, Some(26.0), 0.0, 0.0)
-        },
-        &[swatch, labels],
-    )?;
-    let hex = tree.text("#000000", FONT_SMALL, fixed_style(None, Some(12.0), 0.0))?;
-    let bounds = tree.container(
-        Style {
-            flex_grow: 1.0,
-            padding: layout::points(6.0),
-            gap: Size {
-                width: LengthPercentage::length(0.0),
-                height: LengthPercentage::length(layout::SPACE_1 as f32),
-            },
-            ..column_style(None, Some(54.0), 0.0, 0.0)
-        },
-        &[header, hex],
-    )?;
-    Ok((bounds, swatch, label_node, percent_node, hex))
+fn position_stage_rect(content: Rect) -> Rect {
+    let width = content.w - CONTENT_PAD_X * 2.0;
+    let height = width * 9.0 / 16.0;
+    Rect::new(
+        content.x + CONTENT_PAD_X,
+        content.y + CONTENT_PAD_Y,
+        width,
+        height,
+    )
 }
 
 fn notification_index(setting: NotificationSetting) -> usize {
@@ -660,14 +609,6 @@ fn position_index(position: ToastPosition) -> usize {
     }
 }
 
-fn stop_index(stop: Stop) -> usize {
-    match stop {
-        Stop::Full => 0,
-        Stop::Mid => 1,
-        Stop::Empty => 2,
-    }
-}
-
 impl ConfigureWindow {
     pub fn open(
         event_loop: &ActiveEventLoop,
@@ -676,7 +617,24 @@ impl ConfigureWindow {
         settings: ConfigureSettings,
     ) -> Result<Self, String> {
         let font = ui::load_system_ui_font()?;
-        let layout = ConfigureLayout::compute(&font, false, settings.show_developer)?;
+        let expanded_section = AccordionSection::visible(settings.show_developer)
+            .into_iter()
+            .next()
+            .unwrap_or(AccordionSection::System);
+        let preview_state = PaintState {
+            settings,
+            draft: initial.clone(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section,
+            accordion_anim: None,
+        };
+        let layout = ConfigureLayout::compute(&preview_state, settings.show_developer);
         let attrs = WindowAttributes::default()
             .with_title(format!("{DISPLAY_NAME} — Configure"))
             .with_inner_size(LogicalSize::new(WIN_W, layout.height))
@@ -695,21 +653,23 @@ impl ConfigureWindow {
         let context = Context::new(display).map_err(|e| format!("softbuffer context: {e}"))?;
         let surface = Surface::new(&context, window.clone())
             .map_err(|e| format!("softbuffer surface: {e}"))?;
-        let (hue, sat, val) = initial.full.to_hsv();
+        let (hue, sat, val) = initial.accent().to_hsv();
         let editor = Self {
             window,
             surface,
             font,
             settings,
             draft: initial,
-            selected: Stop::Full,
+            selected: 0,
             hue,
             sat,
             val,
             drag: None,
+            remove_armed: false,
+            pending_commit: false,
             cursor: None,
-            dirty: false,
-            picker_open: false,
+            expanded_section,
+            accordion_anim: None,
         };
         editor.window.request_redraw();
         Ok(editor)
@@ -731,10 +691,31 @@ impl ConfigureWindow {
         self.window.request_redraw();
     }
 
+    fn layout(&self) -> Result<ConfigureLayout, String> {
+        let state = PaintState {
+            settings: self.settings,
+            draft: self.draft.clone(),
+            selected: self.selected,
+            hue: self.hue,
+            sat: self.sat,
+            val: self.val,
+            cursor: self.cursor,
+            remove_armed: self.remove_armed,
+            dragging_stop: match self.drag {
+                Some(DragKind::Stop { index }) => Some(index),
+                _ => None,
+            },
+            expanded_section: self.expanded_section,
+            accordion_anim: self.accordion_anim,
+        };
+        Ok(ConfigureLayout::compute(
+            &state,
+            self.settings.show_developer,
+        ))
+    }
+
     fn resize_to_content(&self) {
-        let Ok(layout) =
-            ConfigureLayout::compute(&self.font, self.picker_open, self.settings.show_developer)
-        else {
+        let Ok(layout) = self.layout() else {
             crate::app_log::warn("configure layout failed during resize");
             return;
         };
@@ -766,6 +747,12 @@ impl ConfigureWindow {
                 return ConfigureAction::Closed;
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .accordion_anim
+                    .is_some_and(|anim| anim.progress() >= 1.0)
+                {
+                    self.accordion_anim = None;
+                }
                 if let Err(err) = self.paint() {
                     crate::app_log::warn(format!("configure UI paint failed: {err}"));
                 }
@@ -791,7 +778,11 @@ impl ConfigureWindow {
                     self.window.request_redraw();
                     return action;
                 }
-                ElementState::Released => self.drag = None,
+                ElementState::Released => {
+                    let action = self.on_release();
+                    self.window.request_redraw();
+                    return action;
+                }
             },
             WindowEvent::ScaleFactorChanged { .. } => {
                 self.resize_to_content();
@@ -802,13 +793,33 @@ impl ConfigureWindow {
         ConfigureAction::None
     }
 
+    fn on_release(&mut self) -> ConfigureAction {
+        let Some(drag) = self.drag.take() else {
+            return ConfigureAction::None;
+        };
+        if let DragKind::Stop { index } = drag {
+            if self.remove_armed {
+                if let Ok(next) = self.draft.remove_stop(index) {
+                    self.select_stop(next);
+                    self.remove_armed = false;
+                    self.pending_commit = false;
+                    return ConfigureAction::ApplySpectrum(self.draft.clone());
+                }
+            }
+        }
+        self.remove_armed = false;
+        if self.pending_commit {
+            self.pending_commit = false;
+            return ConfigureAction::ApplySpectrum(self.draft.clone());
+        }
+        ConfigureAction::None
+    }
+
     fn on_press(&mut self) -> ConfigureAction {
         let Some((x, y)) = self.cursor else {
             return ConfigureAction::None;
         };
-        let Ok(layout) =
-            ConfigureLayout::compute(&self.font, self.picker_open, self.settings.show_developer)
-        else {
+        let Ok(layout) = self.layout() else {
             crate::app_log::warn("configure layout failed during input");
             return ConfigureAction::None;
         };
@@ -824,67 +835,110 @@ impl ConfigureWindow {
             return ConfigureAction::None;
         }
 
-        for setting in [
-            NotificationSetting::Connect,
-            NotificationSetting::Disconnect,
-            NotificationSetting::Low,
-            NotificationSetting::Charged,
-        ] {
-            if layout.notification_row(setting).contains(x, y) {
-                let enabled = !self.notification_enabled(setting);
-                self.set_notification(setting, enabled);
-                return ConfigureAction::SetNotification(setting, enabled);
+        for section in &layout.sections {
+            if section.header.contains(x, y) {
+                if section.section != self.expanded_section {
+                    self.accordion_anim = Some(AccordionAnimation {
+                        from: self.expanded_section,
+                        to: section.section,
+                        started_at: Instant::now(),
+                    });
+                    self.expanded_section = section.section;
+                    self.window.request_redraw();
+                }
+                return ConfigureAction::None;
             }
         }
 
-        for position in positions() {
-            if layout.position_choice(position).contains(x, y) {
-                self.settings.toast_position = position;
-                return ConfigureAction::SelectToastPosition(position);
+        if self.expanded_section == AccordionSection::Notifications {
+            for setting in [
+                NotificationSetting::Connect,
+                NotificationSetting::Disconnect,
+                NotificationSetting::Low,
+                NotificationSetting::Charged,
+            ] {
+                if layout.notification_row(setting).contains(x, y) {
+                    let enabled = !self.notification_enabled(setting);
+                    self.set_notification(setting, enabled);
+                    return ConfigureAction::SetNotification(setting, enabled);
+                }
             }
         }
 
-        if layout.preview.contains(x, y) {
-            self.picker_open = !self.picker_open;
-            self.resize_to_content();
-            return ConfigureAction::None;
+        if self.expanded_section == AccordionSection::ToastPosition {
+            for position in positions() {
+                if layout.position_choice(position).contains(x, y) {
+                    self.settings.toast_position = position;
+                    return ConfigureAction::SelectToastPosition(position);
+                }
+            }
         }
 
         #[cfg(windows)]
-        if layout.autostart_row.contains(x, y) {
+        if self.expanded_section == AccordionSection::System && layout.autostart_row.contains(x, y)
+        {
             self.settings.autostart = !self.settings.autostart;
             return ConfigureAction::SetAutostart(self.settings.autostart);
         }
 
         #[cfg(feature = "dev-emulate")]
-        if self.settings.show_developer {
+        if self.expanded_section == AccordionSection::Developer && self.settings.show_developer {
             for (index, preset) in Preset::ALL.iter().copied().enumerate() {
-                if layout.developer_buttons[index].contains(x, y) {
+                if layout.developer_buttons.get(index).is_some_and(|rect| rect.contains(x, y)) {
                     return ConfigureAction::DeveloperPreset(preset);
                 }
             }
         }
 
-        if self.picker_open {
-            for stop in Stop::ALL {
-                if layout.stop(stop).contains(x, y) {
-                    self.select_stop(stop);
+        if self.expanded_section == AccordionSection::LightbarColors {
+            let handles = layout.stop_handles_for(&self.draft);
+            for (index, handle) in handles.iter().enumerate() {
+                if handle.bounds.contains(x, y) {
+                    self.select_stop(index);
+                    self.drag = Some(DragKind::Stop { index });
+                    self.remove_armed = false;
                     return ConfigureAction::None;
+                }
+            }
+            if layout.spectrum_bar.contains(x, y)
+                || (y >= layout.spectrum_bar.y
+                    && y <= layout.spectrum_bar.bottom() + STOP_HANDLE_H + 4.0
+                    && x >= layout.spectrum_bar.x
+                    && x <= layout.spectrum_bar.right())
+            {
+                let percent = percent_from_bar_x(layout.spectrum_bar, x);
+                match self.draft.add_stop_at(percent) {
+                    Ok(index) => {
+                        self.select_stop(index);
+                        return ConfigureAction::ApplySpectrum(self.draft.clone());
+                    }
+                    Err(_) => {
+                        if let Some(index) = self
+                            .draft
+                            .stops
+                            .iter()
+                            .position(|stop| stop.percent == percent)
+                        {
+                            self.select_stop(index);
+                        }
+                        return ConfigureAction::None;
+                    }
                 }
             }
             if layout.sv.contains(x, y) {
                 self.drag = Some(DragKind::Sv);
                 self.apply_drag();
-            } else if layout.hue.contains(x, y) {
+                return ConfigureAction::None;
+            }
+            if layout.hue.contains(x, y) {
                 self.drag = Some(DragKind::Hue);
                 self.apply_drag();
-            } else if layout.reset.contains(x, y) {
-                self.draft = BatterySpectrum::DEFAULT;
-                self.select_stop(self.selected);
-                self.dirty = true;
-            } else if layout.apply.contains(x, y) && self.dirty {
-                self.dirty = false;
-                return ConfigureAction::ApplySpectrum(self.draft);
+                return ConfigureAction::None;
+            }
+            if layout.reset.contains(x, y) {
+                self.draft = BatterySpectrum::default_spectrum();
+                self.select_stop(0);
+                return ConfigureAction::ApplySpectrum(self.draft.clone());
             }
         }
         ConfigureAction::None
@@ -908,38 +962,28 @@ impl ConfigureWindow {
         }
     }
 
-    fn select_stop(&mut self, stop: Stop) {
-        self.selected = stop;
-        let (hue, sat, val) = self.color_of(stop).to_hsv();
-        self.hue = hue;
-        self.sat = sat;
-        self.val = val;
-    }
-
-    fn color_of(&self, stop: Stop) -> Rgb {
-        match stop {
-            Stop::Full => self.draft.full,
-            Stop::Mid => self.draft.mid,
-            Stop::Empty => self.draft.empty,
+    fn select_stop(&mut self, index: usize) {
+        let index = index.min(self.draft.stops.len().saturating_sub(1));
+        self.selected = index;
+        if let Some(stop) = self.draft.stops.get(index) {
+            let (hue, sat, val) = stop.color.to_hsv();
+            self.hue = hue;
+            self.sat = sat;
+            self.val = val;
         }
     }
 
-    fn set_color_of(&mut self, color: Rgb) {
-        match self.selected {
-            Stop::Full => self.draft.full = color,
-            Stop::Mid => self.draft.mid = color,
-            Stop::Empty => self.draft.empty = color,
+    fn set_selected_color(&mut self, color: Rgb) {
+        if self.draft.set_stop_color(self.selected, color).is_ok() {
+            self.pending_commit = true;
         }
-        self.dirty = true;
     }
 
     fn apply_drag(&mut self) {
         let Some((x, y)) = self.cursor else {
             return;
         };
-        let Ok(layout) =
-            ConfigureLayout::compute(&self.font, self.picker_open, self.settings.show_developer)
-        else {
+        let Ok(layout) = self.layout() else {
             crate::app_log::warn("configure layout failed during drag");
             return;
         };
@@ -948,14 +992,28 @@ impl ConfigureWindow {
                 let rect = layout.sv;
                 self.sat = ((x - rect.x) / rect.w).clamp(0.0, 1.0) as f32;
                 self.val = (1.0 - (y - rect.y) / rect.h).clamp(0.0, 1.0) as f32;
+                self.set_selected_color(hsv_to_rgb(self.hue, self.sat, self.val));
             }
             Some(DragKind::Hue) => {
                 let rect = layout.hue;
                 self.hue = ((y - rect.y) / rect.h).clamp(0.0, 1.0) as f32 * 360.0;
+                self.set_selected_color(hsv_to_rgb(self.hue, self.sat, self.val));
             }
-            None => return,
+            Some(DragKind::Stop { index }) => {
+                let percent = percent_from_bar_x(layout.spectrum_bar, x);
+                let distance = (y - layout.spectrum_bar.bottom()).abs();
+                self.remove_armed = distance >= STOP_REMOVE_DISTANCE
+                    && self.draft.stops.len() > BatterySpectrum::MIN_STOPS;
+                if !self.remove_armed {
+                    if let Ok(new_index) = self.draft.set_stop_percent(index, percent) {
+                        self.selected = new_index;
+                        self.drag = Some(DragKind::Stop { index: new_index });
+                        self.pending_commit = true;
+                    }
+                }
+            }
+            None => {}
         }
-        self.set_color_of(hsv_to_rgb(self.hue, self.sat, self.val));
     }
 
     fn to_logical(&self, position: PhysicalPosition<f64>) -> (f64, f64) {
@@ -967,18 +1025,24 @@ impl ConfigureWindow {
         let size = self.window.inner_size();
         let width = NonZeroU32::new(size.width.max(1)).unwrap();
         let height = NonZeroU32::new(size.height.max(1)).unwrap();
+        let dragging_stop = match self.drag {
+            Some(DragKind::Stop { index }) => Some(index),
+            _ => None,
+        };
         let state = PaintState {
             settings: self.settings,
-            draft: self.draft,
+            draft: self.draft.clone(),
             selected: self.selected,
             hue: self.hue,
             sat: self.sat,
             val: self.val,
             cursor: self.cursor,
-            dirty: self.dirty,
+            remove_armed: self.remove_armed,
+            dragging_stop,
+            expanded_section: self.expanded_section,
+            accordion_anim: self.accordion_anim,
         };
-        let layout =
-            ConfigureLayout::compute(&self.font, self.picker_open, self.settings.show_developer)?;
+        let layout = self.layout()?;
         self.surface
             .resize(width, height)
             .map_err(|e| format!("resize: {e}"))?;
@@ -994,19 +1058,34 @@ impl ConfigureWindow {
             &self.font,
         );
         fb.clear(ui::BG);
-        Self::paint_titlebar(state, &layout, &mut fb);
-        paint_separators(&mut fb, &layout);
-        Self::paint_settings(state, &layout, &mut fb);
-        Self::paint_editor(state, &layout, &mut fb);
-        #[cfg(feature = "dev-emulate")]
-        if state.settings.show_developer {
-            Self::paint_developer(state, &layout, &mut fb);
+        Self::paint_titlebar(&state, &layout, &mut fb);
+        for section in &layout.sections {
+            paint_section_header(&mut fb, section, &state);
+            if state.section_amount(section.section) <= 0.0 {
+                continue;
+            }
+            match section.section {
+                AccordionSection::System => Self::paint_system(&state, &layout, &mut fb),
+                AccordionSection::Notifications => {
+                    Self::paint_notifications(&state, &layout, &mut fb)
+                }
+                AccordionSection::ToastPosition => {
+                    paint_position_diagram(&mut fb, &layout, &state)
+                }
+                AccordionSection::LightbarColors => Self::paint_editor(&state, &layout, &mut fb),
+                #[cfg(feature = "dev-emulate")]
+                AccordionSection::Developer => Self::paint_developer(&state, &layout, &mut fb),
+            }
+            cover_section_overflow(&mut fb, section);
+        }
+        if state.is_animating() {
+            self.window.request_redraw();
         }
         buffer.present().map_err(|e| format!("present: {e}"))
     }
 
-    fn paint_titlebar(state: PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
-        let accent = state.draft.full;
+    fn paint_titlebar(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        let accent = state.accent();
         fb.fill_rect(0.0, 0.0, WIN_W, layout::WINDOW_HEADER_HEIGHT, ui::PANEL);
         fb.fill_rect(
             0.0,
@@ -1046,8 +1125,41 @@ impl ConfigureWindow {
         );
     }
 
-    fn paint_settings(state: PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
-        section_heading(fb, layout.notifications_heading, "Notifications");
+    fn paint_system(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        #[cfg(windows)]
+        {
+            let row = layout.autostart_row;
+            let switch = layout.autostart_switch;
+            fb.text_in_rect(
+                layout.autostart_label,
+                "Start with Windows",
+                ui::INK,
+                FONT_BODY,
+                ui::HorizontalAlign::Left,
+                ui::VerticalAlign::Center,
+            );
+            paint_switch(
+                fb,
+                switch,
+                state.settings.autostart,
+                state.cursor.is_some_and(|(x, y)| row.contains(x, y)),
+                state.accent(),
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = state;
+            fb.text(
+                layout.autostart_row.x + 12.0,
+                layout.autostart_row.y + 14.0,
+                "Managed by your operating system",
+                ui::MUTED,
+                FONT_SMALL,
+            );
+        }
+    }
+
+    fn paint_notifications(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
         for setting in [
             NotificationSetting::Connect,
             NotificationSetting::Disconnect,
@@ -1076,128 +1188,80 @@ impl ConfigureWindow {
                 switch,
                 state.notification_enabled(setting),
                 state.cursor.is_some_and(|(x, y)| row.contains(x, y)),
-                state.draft.full,
+                state.accent(),
             );
         }
-
-        section_heading(fb, layout.position_heading, "Toast position");
-        paint_position_diagram(fb, layout, state);
-
-        section_heading(fb, layout.system_heading, "System");
-        #[cfg(windows)]
-        {
-            let row = layout.autostart_row;
-            let switch = layout.autostart_switch;
-            fb.text_in_rect(
-                layout.autostart_label,
-                "Start with Windows",
-                ui::INK,
-                FONT_BODY,
-                ui::HorizontalAlign::Left,
-                ui::VerticalAlign::Center,
-            );
-            paint_switch(
-                fb,
-                switch,
-                state.settings.autostart,
-                state.cursor.is_some_and(|(x, y)| row.contains(x, y)),
-                state.draft.full,
-            );
-        }
-        #[cfg(not(windows))]
-        fb.text(
-            layout.autostart_row.x + 12.0,
-            layout.autostart_row.y + 14.0,
-            "Managed by your operating system",
-            ui::MUTED,
-            FONT_SMALL,
-        );
     }
 
-    fn paint_editor(state: PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
-        section_heading(fb, layout.editor_heading, "Lightbar colors");
+    fn paint_editor(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
         let preview = layout.preview;
-        let preview_hot = state.cursor.is_some_and(|(x, y)| preview.contains(x, y));
         fb.round_rect(
             (preview.x, preview.y, preview.w, preview.h),
             layout::RADIUS_CARD,
-            if preview_hot {
-                ui::PANEL_HOVER
-            } else {
-                ui::PANEL
-            },
-            Some(if layout.picker_open {
-                ui::rgb_of(state.draft.full)
+            ui::PANEL,
+            Some(ui::rgb_of(state.accent())),
+        );
+        draw_spectrum_bar(fb, layout.spectrum_bar, &state.draft);
+
+        for (index, stop) in state.draft.stops.iter().enumerate() {
+            let handle = stop_handle_layout(layout.spectrum_bar, stop.percent);
+            let selected = index == state.selected;
+            let removing = state.remove_armed && state.dragging_stop == Some(index);
+            let hot = state
+                .cursor
+                .is_some_and(|(x, y)| handle.bounds.contains(x, y));
+            let border = if removing {
+                ui::rgb(196, 43, 54)
+            } else if selected {
+                ui::INK
+            } else if hot {
+                ui::MUTED
             } else {
                 ui::LINE
-            }),
-        );
-        draw_spectrum_bar(fb, layout.spectrum_bar, state.draft);
-        if !layout.picker_open {
-            return;
-        }
-
-        for stop in Stop::ALL {
-            let stop_layout = layout.stops[stop_index(stop)];
-            let rect = stop_layout.bounds;
-            let selected = stop == state.selected;
-            let hot = state.cursor.is_some_and(|(x, y)| rect.contains(x, y));
-            fb.round_rect(
-                (rect.x, rect.y, rect.w, rect.h),
-                8.0,
-                if hot { ui::PANEL_HOVER } else { ui::PANEL },
-                Some(if selected {
-                    ui::rgb_of(state.color_of(stop))
-                } else {
-                    ui::LINE
-                }),
+            };
+            fb.line(
+                (handle.tip.0, handle.tip.1),
+                (handle.tip.0, handle.swatch.y),
+                1.0,
+                border,
             );
             fb.round_rect(
                 (
-                    stop_layout.swatch.x,
-                    stop_layout.swatch.y,
-                    stop_layout.swatch.w,
-                    stop_layout.swatch.h,
+                    handle.swatch.x - 2.0,
+                    handle.swatch.y - 2.0,
+                    handle.swatch.w + 4.0,
+                    handle.swatch.h + 4.0,
                 ),
-                6.0,
-                ui::rgb_of(state.color_of(stop)),
+                4.0,
+                if removing {
+                    ui::rgb(80, 28, 32)
+                } else {
+                    ui::PANEL
+                },
+                Some(border),
+            );
+            fb.round_rect(
+                (
+                    handle.swatch.x,
+                    handle.swatch.y,
+                    handle.swatch.w,
+                    handle.swatch.h,
+                ),
+                3.0,
+                ui::rgb_of(stop.color),
                 None,
-            );
-            fb.text_in_rect(
-                stop_layout.label,
-                stop.label(),
-                ui::INK,
-                FONT_BODY,
-                ui::HorizontalAlign::Left,
-                ui::VerticalAlign::Center,
-            );
-            fb.text_in_rect(
-                stop_layout.percent,
-                stop.percent(),
-                ui::MUTED,
-                FONT_SMALL,
-                ui::HorizontalAlign::Left,
-                ui::VerticalAlign::Center,
-            );
-            fb.text_in_rect(
-                stop_layout.hex,
-                &state.color_of(stop).to_hex(),
-                ui::MUTED,
-                FONT_SMALL,
-                ui::HorizontalAlign::Left,
-                ui::VerticalAlign::Center,
             );
         }
 
         let picker = layout.picker;
         card(fb, picker);
+        let label = state
+            .selected_stop()
+            .map(|stop| format!("{}% · {}", stop.percent, stop.color.to_hex()))
+            .unwrap_or_else(|| "Select a stop".to_string());
         fb.text_in_rect(
             layout.picker_label,
-            &format!(
-                "Editing {} · {}",
-                state.selected.label(),
-                state.selected.percent()
-            ),
+            &label,
             ui::INK,
             FONT_BODY,
             ui::HorizontalAlign::Left,
@@ -1215,28 +1279,12 @@ impl ConfigureWindow {
                 .is_some_and(|(x, y)| layout.reset.contains(x, y)),
             false,
             true,
-            state.draft.full,
-        );
-        paint_button(
-            fb,
-            layout.apply,
-            "Apply",
-            state
-                .cursor
-                .is_some_and(|(x, y)| layout.apply.contains(x, y)),
-            true,
-            state.dirty,
-            state.draft.full,
+            state.accent(),
         );
     }
 
     #[cfg(feature = "dev-emulate")]
-    fn paint_developer(state: PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
-        section_heading(
-            fb,
-            layout.developer_heading.unwrap_or_default(),
-            "Developer",
-        );
+    fn paint_developer(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
         for (index, preset) in Preset::ALL.iter().copied().enumerate() {
             let rect = layout.developer_buttons[index];
             let label = preset
@@ -1250,7 +1298,7 @@ impl ConfigureWindow {
                 state.cursor.is_some_and(|(x, y)| rect.contains(x, y)),
                 false,
                 true,
-                state.draft.full,
+                state.accent(),
             );
         }
     }
@@ -1275,8 +1323,14 @@ fn card(fb: &mut Framebuffer<'_>, rect: Rect) {
 }
 
 fn section_heading(fb: &mut Framebuffer<'_>, rect: Rect, title: &str) {
+    let label = Rect::new(
+        rect.x + HEADER_TITLE_PAD_X,
+        rect.y,
+        (rect.w - HEADER_TITLE_PAD_X * 2.0 - 14.0).max(0.0),
+        rect.h,
+    );
     fb.text_in_rect(
-        rect,
+        label,
         title,
         ui::INK,
         FONT_HEADING,
@@ -1285,22 +1339,79 @@ fn section_heading(fb: &mut Framebuffer<'_>, rect: Rect, title: &str) {
     );
 }
 
-fn paint_separators(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout) {
-    for separator in &layout.separators {
-        fb.fill_rect(separator.x, separator.y, separator.w, separator.h, ui::LINE);
+fn paint_section_header(fb: &mut Framebuffer<'_>, section: &SectionLayout, state: &PaintState) {
+    let hot = state
+        .cursor
+        .is_some_and(|(x, y)| section.header.contains(x, y));
+    let active = section.section == state.expanded_section;
+    if hot || active {
+        fb.fill_rect(
+            section.header.x,
+            section.header.y,
+            section.header.w,
+            section.header.h,
+            if active { ui::PANEL } else { ui::PANEL_HOVER },
+        );
+    }
+    section_heading(fb, section.header, section.section.title());
+    paint_accordion_affordance(fb, section.header, state.section_amount(section.section));
+    fb.fill_rect(
+        section.header.x,
+        section.header.bottom(),
+        section.header.w,
+        1.0,
+        ui::LINE,
+    );
+}
+
+fn cover_section_overflow(fb: &mut Framebuffer<'_>, section: &SectionLayout) {
+    if section.visible_height + 0.5 >= section.full_height {
+        return;
+    }
+    let hidden_y = section.content.y + section.visible_height;
+    fb.fill_rect(
+        section.content.x,
+        hidden_y,
+        section.content.w,
+        (section.full_height - section.visible_height).max(0.0),
+        ui::BG,
+    );
+}
+
+fn paint_accordion_affordance(fb: &mut Framebuffer<'_>, header: Rect, amount: f64) {
+    let rect = Rect::new(
+        header.right() - HEADER_TITLE_PAD_X - 14.0,
+        header.y + (header.h - 14.0) / 2.0,
+        14.0,
+        14.0,
+    );
+    let color = ui::MUTED;
+    fb.fill_rect(rect.x + 2.0, rect.y + 6.0, 10.0, 2.0, color);
+    let vertical_h = ((1.0 - amount) * 10.0).round();
+    if vertical_h > 0.0 {
+        let top = rect.y + (14.0 - vertical_h) / 2.0;
+        fb.fill_rect(rect.x + 6.0, top, 2.0, vertical_h, color);
     }
 }
 
-fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, state: PaintState) {
+fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, state: &PaintState) {
+    let stage = layout.position_stage;
+    fb.round_rect(
+        (stage.x, stage.y, stage.w, stage.h),
+        layout::RADIUS_CARD,
+        POSITION_STAGE_DARK,
+        Some(ui::LINE),
+    );
     for position in positions() {
         let hit = layout.position_choice(position);
         let hot = state.cursor.is_some_and(|(x, y)| hit.contains(x, y));
         let selected = position == state.settings.toast_position;
+        let radius = (hit.h / 2.0).min(4.0);
         fb.round_rect(
             (hit.x, hit.y, hit.w, hit.h),
-            5.0,
+            radius,
             if selected {
-                ui::rgb_of(state.draft.full)
+                ui::rgb_of(state.accent())
             } else if hot {
                 ui::PANEL_HOVER
             } else {
@@ -1308,6 +1419,19 @@ fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, st
             },
             Some(if selected { ui::INK } else { ui::LINE }),
         );
+        if selected || hot {
+            let rail_w = (hit.h * 0.35).clamp(2.0, 4.0);
+            fb.round_rect(
+                (hit.x, hit.y, rail_w, hit.h),
+                radius.min(rail_w / 2.0),
+                if selected {
+                    ui::INK
+                } else {
+                    ui::MUTED
+                },
+                None,
+            );
+        }
     }
 }
 
@@ -1396,7 +1520,7 @@ fn paint_button(
     );
 }
 
-fn draw_spectrum_bar(fb: &mut Framebuffer<'_>, rect: Rect, spectrum: BatterySpectrum) {
+fn draw_spectrum_bar(fb: &mut Framebuffer<'_>, rect: Rect, spectrum: &BatterySpectrum) {
     let x0 = fb.to_phys(rect.x);
     let y0 = fb.to_phys(rect.y);
     let x1 = fb.to_phys(rect.x + rect.w);
@@ -1461,11 +1585,37 @@ mod tests {
 
     #[test]
     fn position_choices_map_to_distinct_hit_regions() {
-        let font = ui::load_system_ui_font().unwrap();
-        let layout = ConfigureLayout::compute(&font, false, false).unwrap();
+        let state = PaintState {
+            settings: ConfigureSettings {
+                notify_low: true,
+                notify_charged: true,
+                notify_connect: true,
+                notify_disconnect: true,
+                toast_position: ToastPosition::TopRight,
+                #[cfg(windows)]
+                autostart: false,
+                show_developer: false,
+            },
+            draft: BatterySpectrum::default_spectrum(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section: AccordionSection::ToastPosition,
+            accordion_anim: None,
+        };
+        let layout = ConfigureLayout::compute(&state, false);
+        let stage = layout.position_stage;
+        assert!((stage.w / stage.h - 16.0 / 9.0).abs() < 1e-6);
+        assert!(stage.x >= layout.section(AccordionSection::ToastPosition).content.x);
         for position in positions() {
             let rect = layout.position_choice(position);
-            assert!((rect.w / rect.h - 16.0 / 9.0).abs() < f64::EPSILON);
+            assert!((rect.w / rect.h - TOAST_ASPECT).abs() < 1e-6);
+            assert!(stage.contains(rect.x + 0.5, rect.y + 0.5));
+            assert!(stage.contains(rect.right() - 0.5, rect.bottom() - 0.5));
             let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
             assert!(rect.contains(center.0, center.1));
             assert_eq!(
@@ -1483,64 +1633,100 @@ mod tests {
     }
 
     #[test]
+    fn section_content_shares_horizontal_padding() {
+        let layout = ConfigureLayout::compute(&preview_state(AccordionSection::System), false);
+        let content_left = CONTENT_PAD_X;
+        assert!((layout.autostart_row.x - content_left).abs() < 1e-6);
+        let notifications =
+            ConfigureLayout::compute(&preview_state(AccordionSection::Notifications), false);
+        assert!((notifications.notification_rows[0].x - content_left).abs() < 1e-6);
+        let toast =
+            ConfigureLayout::compute(&preview_state(AccordionSection::ToastPosition), false);
+        assert!((toast.position_stage.x - content_left).abs() < 1e-6);
+        let lightbar =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        assert!((lightbar.preview.x - content_left).abs() < 1e-6);
+    }
+
+    #[test]
     fn title_controls_do_not_overlap_drag_region() {
-        let font = ui::load_system_ui_font().unwrap();
-        let layout = ConfigureLayout::compute(&font, false, false).unwrap();
+        let state = preview_state(AccordionSection::System);
+        let layout = ConfigureLayout::compute(&state, false);
         assert!(layout.title_drag.right() <= layout.minimize.x);
         assert!(layout.minimize.right() <= layout.close.x);
         assert_eq!(layout.title_drag.h, layout::WINDOW_HEADER_HEIGHT);
     }
 
     #[test]
-    fn sections_follow_compact_order_and_picker_expands() {
-        let font = ui::load_system_ui_font().unwrap();
-        let collapsed = ConfigureLayout::compute(&font, false, false).unwrap();
-        let expanded = ConfigureLayout::compute(&font, true, false).unwrap();
-        assert!(collapsed.height < expanded.height);
-        assert!(collapsed.autostart_row.bottom() < collapsed.notifications_heading.y);
-        assert!(collapsed.notification_rows[3].bottom() < collapsed.position_heading.y);
-        assert!(collapsed.position_choices[3].bottom() < collapsed.editor_heading.y);
-        assert!(collapsed.preview.w > 240.0);
-        let center = (
-            collapsed.preview.x + collapsed.preview.w / 2.0,
-            collapsed.preview.y + collapsed.preview.h / 2.0,
-        );
-        assert!(collapsed.preview.contains(center.0, center.1));
+    fn first_section_is_default_and_exactly_one_is_open() {
+        let state = preview_state(AccordionSection::System);
+        let layout = ConfigureLayout::compute(&state, false);
+        let expanded = layout
+            .sections
+            .iter()
+            .filter(|section| section.visible_height > 0.0)
+            .count();
+        assert_eq!(expanded, 1);
+        assert_eq!(layout.sections[0].section, AccordionSection::System);
+        assert!(layout.section(AccordionSection::System).visible_height > 0.0);
     }
 
     #[test]
-    fn computed_layout_fits_its_derived_height() {
-        let font = ui::load_system_ui_font().unwrap();
-        for picker_open in [false, true] {
-            let layout = ConfigureLayout::compute(&font, picker_open, false).unwrap();
-            let mut rects = vec![
-                layout.notifications_heading,
-                layout.position_heading,
-                layout.system_heading,
-                layout.editor_heading,
-                layout.preview,
-            ];
-            rects.extend(layout.notification_rows);
-            rects.extend(layout.position_choices);
-            if picker_open {
-                rects.extend([layout.picker, layout.reset, layout.apply]);
-                rects.extend(layout.stops.map(|stop| stop.bounds));
-            }
-            assert!(rects.iter().all(|rect| {
-                rect.x >= 0.0
-                    && rect.y >= layout::WINDOW_HEADER_HEIGHT
-                    && rect.right() <= WIN_W
-                    && rect.bottom() <= layout.height
-            }));
+    fn window_height_matches_largest_panel() {
+        let system = ConfigureLayout::compute(&preview_state(AccordionSection::System), false);
+        let notifications =
+            ConfigureLayout::compute(&preview_state(AccordionSection::Notifications), false);
+        let position =
+            ConfigureLayout::compute(&preview_state(AccordionSection::ToastPosition), false);
+        let lightbar =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        assert_eq!(system.height, notifications.height);
+        assert_eq!(notifications.height, position.height);
+        assert_eq!(position.height, lightbar.height);
+    }
+
+    #[test]
+    fn stop_handles_track_percent_positions() {
+        let layout =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        let spectrum = BatterySpectrum::default_spectrum();
+        let handles = layout.stop_handles_for(&spectrum);
+        assert_eq!(handles.len(), 3);
+        assert!(handles[0].bounds.x < handles[1].bounds.x);
+        assert!(handles[1].bounds.x < handles[2].bounds.x);
+        for handle in &handles {
+            assert!(handle.bounds.bottom() <= layout.height + 1.0);
         }
+    }
+
+    #[test]
+    fn accordion_animation_splits_heights_between_sections() {
+        let mut state = preview_state(AccordionSection::System);
+        state.accordion_anim = Some(AccordionAnimation {
+            from: AccordionSection::System,
+            to: AccordionSection::LightbarColors,
+            started_at: Instant::now() - Duration::from_millis(ACCORDION_ANIM_MS / 2),
+        });
+        state.expanded_section = AccordionSection::LightbarColors;
+        let layout = ConfigureLayout::compute(&state, false);
+        let system = layout.section(AccordionSection::System);
+        let lightbar = layout.section(AccordionSection::LightbarColors);
+        assert!(system.visible_height > 0.0);
+        assert!(lightbar.visible_height > 0.0);
+        assert!(system.visible_height < system.full_height);
+        assert!(lightbar.visible_height < lightbar.full_height);
     }
 
     #[cfg(feature = "dev-emulate")]
     #[test]
     fn developer_controls_are_present_and_bounded() {
-        let font = ui::load_system_ui_font().unwrap();
-        let layout = ConfigureLayout::compute(&font, false, true).unwrap();
-        assert!(layout.developer_heading.is_some());
+        let layout = ConfigureLayout::compute(&preview_state(AccordionSection::Developer), true);
+        assert!(
+            layout
+                .sections
+                .iter()
+                .any(|section| section.section == AccordionSection::Developer)
+        );
         assert!(layout.developer_buttons.len() >= Preset::ALL.len());
         assert!(
             layout
@@ -1548,5 +1734,30 @@ mod tests {
                 .iter()
                 .all(|rect| rect.bottom() <= layout.height)
         );
+    }
+
+    fn preview_state(section: AccordionSection) -> PaintState {
+        PaintState {
+            settings: ConfigureSettings {
+                notify_low: true,
+                notify_charged: true,
+                notify_connect: true,
+                notify_disconnect: true,
+                toast_position: ToastPosition::TopRight,
+                #[cfg(windows)]
+                autostart: false,
+                show_developer: false,
+            },
+            draft: BatterySpectrum::default_spectrum(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section: section,
+            accordion_anim: None,
+        }
     }
 }

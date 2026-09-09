@@ -11,8 +11,10 @@ use crate::known::{self, KnownControllers};
 use crate::lightbar::{
     self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
 };
-use crate::notify::NotifyTracker;
-use crate::prefs::Prefs;
+use crate::notify::{NotifyEvent, NotifyTracker};
+use crate::prefs::{Prefs, ToastPosition};
+use crate::toast::{EscapeHotkey, SLIDE_DURATION, ToastMessage, ToastWindow};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -39,12 +41,16 @@ const IDENTIFY_ID_PREFIX: &str = "identify:";
 const REMEMBER_ID_PREFIX: &str = "remember:";
 
 #[derive(Debug)]
-enum UserEvent {
+pub(crate) enum UserEvent {
     MenuEvent(MenuEvent),
     /// Periodic tick: check presence; full poll when membership changes or battery is due.
     Tick,
     /// Result of a background `poll_controllers` call.
     PollResult(Result<Vec<ControllerStatus>, String>),
+    /// Escape was pressed while an overlay toast was visible.
+    ToastDismiss(u64),
+    /// Advance the active toast's slide animation.
+    ToastFrame(u64),
 }
 
 struct TrayApp {
@@ -64,6 +70,13 @@ struct TrayApp {
     known: KnownControllers,
     notify: NotifyTracker,
     configure: Option<ConfigureWindow>,
+    toast: Option<ToastWindow>,
+    toast_queue: VecDeque<ToastMessage>,
+    toast_deadline: Option<Instant>,
+    toast_hotkey: Option<EscapeHotkey>,
+    toast_generation: u64,
+    toast_animation_started: Instant,
+    toast_dismissing: bool,
     #[cfg(feature = "dev-emulate")]
     dev_mode: bool,
     #[cfg(feature = "dev-emulate")]
@@ -135,6 +148,13 @@ fn run_app(
         known,
         notify: NotifyTracker::new(),
         configure: None,
+        toast: None,
+        toast_queue: VecDeque::new(),
+        toast_deadline: None,
+        toast_hotkey: None,
+        toast_generation: 0,
+        toast_animation_started: Instant::now(),
+        toast_dismissing: false,
         #[cfg(feature = "dev-emulate")]
         dev_mode,
         #[cfg(feature = "dev-emulate")]
@@ -223,6 +243,7 @@ impl TrayApp {
             notify_low: self.prefs.notify_low,
             notify_charged: self.prefs.notify_charged,
             notify_connect: self.prefs.notify_connect,
+            toast_position: self.prefs.toast_position,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
             show_developer: {
@@ -265,8 +286,10 @@ impl TrayApp {
         }
         if controllers_changed {
             let previous = std::mem::replace(&mut self.controllers, controllers);
-            self.notify
+            let events = self
+                .notify
                 .evaluate(&previous, &self.controllers, &self.prefs);
+            self.queue_notifications(events);
             self.sync_low_battery();
         }
         self.known.save();
@@ -371,7 +394,7 @@ impl TrayApp {
         tray.set_menu(Some(Box::new(menu)));
     }
 
-    fn create_tray(&mut self) {
+    fn create_tray(&mut self, event_loop: &ActiveEventLoop) {
         // Show the tray immediately, then poll in the background so a stuck HID
         // read cannot delay the icon for tens of seconds.
         self.controllers = Vec::new();
@@ -393,7 +416,126 @@ impl TrayApp {
             Err(err) => app_log::error(format!("failed to create tray icon: {err}")),
         }
 
+        match ToastWindow::open(event_loop, event_loop.owned_display_handle()) {
+            Ok(window) => self.toast = Some(window),
+            Err(err) => app_log::error(format!("failed to create toast window: {err}")),
+        }
+
         self.request_refresh();
+    }
+
+    fn queue_notifications(&mut self, events: Vec<NotifyEvent>) {
+        for event in events {
+            self.toast_queue
+                .push_back(ToastMessage::from_notification(event, self.prefs.spectrum));
+        }
+        self.show_next_toast();
+    }
+
+    fn show_next_toast(&mut self) {
+        if self.toast_deadline.is_some() {
+            return;
+        }
+        let Some(message) = self.toast_queue.pop_front() else {
+            return;
+        };
+        let Some(window) = self.toast.as_mut() else {
+            app_log::warn("toast dropped because overlay window is unavailable");
+            self.toast_queue.clear();
+            return;
+        };
+        window.show(message, self.prefs.toast_position);
+        let now = Instant::now();
+        self.toast_deadline = Some(now + Duration::from_secs(5));
+        self.toast_animation_started = now;
+        self.toast_dismissing = false;
+        self.toast_generation = self.toast_generation.wrapping_add(1);
+        let generation = self.toast_generation;
+        self.toast_hotkey = EscapeHotkey::register(self.proxy.clone(), generation);
+        self.schedule_animation_frames(generation);
+
+        // A proxy event guarantees delivery even if the platform misses WaitUntil.
+        let proxy = self.proxy.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(5));
+            let _ = proxy.send_event(UserEvent::ToastDismiss(generation));
+        });
+    }
+
+    fn dismiss_toast(&mut self) {
+        if self.toast_deadline.is_none() || self.toast_dismissing {
+            return;
+        }
+        self.toast_hotkey.take();
+        self.toast_dismissing = true;
+        self.toast_animation_started = Instant::now();
+        if let Some(window) = self.toast.as_ref() {
+            window.set_slide_progress(0.0, true);
+        }
+        self.schedule_animation_frames(self.toast_generation);
+    }
+
+    fn finish_toast(&mut self) {
+        if self.toast_deadline.take().is_none() {
+            return;
+        }
+        self.toast_hotkey.take();
+        self.toast_dismissing = false;
+        if let Some(window) = self.toast.as_mut() {
+            window.hide();
+        }
+        self.show_next_toast();
+    }
+
+    fn schedule_animation_frames(&self, generation: u64) {
+        let proxy = self.proxy.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            while started.elapsed() < SLIDE_DURATION {
+                thread::sleep(Duration::from_millis(16));
+                if proxy.send_event(UserEvent::ToastFrame(generation)).is_err() {
+                    return;
+                }
+            }
+            let _ = proxy.send_event(UserEvent::ToastFrame(generation));
+        });
+    }
+
+    fn animate_toast(&mut self) {
+        if self.toast_deadline.is_none() {
+            return;
+        }
+        let progress = (self.toast_animation_started.elapsed().as_secs_f32()
+            / SLIDE_DURATION.as_secs_f32())
+        .min(1.0);
+        if let Some(window) = self.toast.as_ref() {
+            window.set_slide_progress(progress, self.toast_dismissing);
+        }
+        if self.toast_dismissing && progress >= 1.0 {
+            self.finish_toast();
+        }
+    }
+
+    fn show_position_preview(&mut self) {
+        self.toast_queue.clear();
+        if self.toast_deadline.is_some() {
+            self.finish_toast();
+        }
+        self.toast_queue
+            .push_back(ToastMessage::preview(self.prefs.spectrum.full));
+        self.show_next_toast();
+    }
+
+    fn update_control_flow(&self, event_loop: &ActiveEventLoop) {
+        let wake_at = if self.toast_dismissing {
+            Some(self.toast_animation_started + SLIDE_DURATION)
+        } else {
+            self.toast_deadline
+        };
+        match wake_at {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
     }
 
     fn on_remember_menu(&mut self, serial: &str) {
@@ -483,6 +625,13 @@ impl TrayApp {
             .map(|w| w.menu_bar().notify_connect.is_checked())
             .unwrap_or(!self.prefs.notify_connect);
         self.prefs.save();
+    }
+
+    fn on_toast_position_menu(&mut self, position: ToastPosition) {
+        self.prefs.toast_position = position;
+        self.prefs.save();
+        self.sync_configure_settings();
+        self.show_position_preview();
     }
 
     fn open_configure(&mut self, event_loop: &ActiveEventLoop) {
@@ -626,10 +775,26 @@ impl ApplicationHandler<UserEvent> for TrayApp {
 
     fn window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: winit::event::WindowEvent,
     ) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|window| window.window_id() == window_id)
+        {
+            let dismiss = self
+                .toast
+                .as_mut()
+                .is_some_and(|window| window.handle(&event));
+            if dismiss {
+                self.dismiss_toast();
+            }
+            self.update_control_flow(event_loop);
+            return;
+        }
+
         let action = {
             let Some(window) = self.configure.as_mut() else {
                 return;
@@ -640,19 +805,34 @@ impl ApplicationHandler<UserEvent> for TrayApp {
             window.handle(&event)
         };
         self.on_configure_action(action);
+        self.update_control_flow(event_loop);
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         if cause == StartCause::Init {
-            self.create_tray();
+            self.create_tray(event_loop);
         }
-        event_loop.set_control_flow(ControlFlow::Wait);
+        let now = Instant::now();
+        if self.toast_dismissing && now >= self.toast_animation_started + SLIDE_DURATION {
+            self.finish_toast();
+        } else if self.toast_deadline.is_some_and(|deadline| now >= deadline) {
+            self.dismiss_toast();
+        }
+        self.update_control_flow(event_loop);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Tick => self.on_tick(),
             UserEvent::PollResult(result) => self.on_poll_result(result),
+            UserEvent::ToastDismiss(generation) if generation == self.toast_generation => {
+                self.dismiss_toast()
+            }
+            UserEvent::ToastDismiss(_) => {}
+            UserEvent::ToastFrame(generation) if generation == self.toast_generation => {
+                self.animate_toast()
+            }
+            UserEvent::ToastFrame(_) => {}
             UserEvent::MenuEvent(event) => {
                 let id = event.id.as_ref();
                 if id == QUIT_ID {
@@ -666,6 +846,8 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                     self.on_notify_charged_menu();
                 } else if id == configure_ui::NOTIFY_CONNECT_ID {
                     self.on_notify_connect_menu();
+                } else if let Some(position) = configure_ui::toast_position_from_menu_id(id) {
+                    self.on_toast_position_menu(position);
                 } else if let Some(serial) = parse_identify_id(id) {
                     self.identify(serial);
                 } else if let Some(serial) = parse_remember_id(id) {
@@ -683,5 +865,6 @@ impl ApplicationHandler<UserEvent> for TrayApp {
                 }
             }
         }
+        self.update_control_flow(event_loop);
     }
 }

@@ -4,13 +4,14 @@ use crate::app_meta::DISPLAY_NAME;
 use crate::color::{BatterySpectrum, Rgb, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::Preset;
+use crate::prefs::ToastPosition;
 use fontdue::Font;
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 #[cfg(feature = "dev-emulate")]
 use tray_icon::menu::MenuItem;
-use tray_icon::menu::{CheckMenuItem, Menu, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, PredefinedMenuItem, Submenu};
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
@@ -61,14 +62,29 @@ const BTN_INK_HOT: u32 = rgb_u32(255, 255, 255);
 pub const NOTIFY_LOW_ID: &str = "cfg:notify_low";
 pub const NOTIFY_CHARGED_ID: &str = "cfg:notify_charged";
 pub const NOTIFY_CONNECT_ID: &str = "cfg:notify_connect";
+pub const TOAST_TOP_LEFT_ID: &str = "cfg:toast_top_left";
+pub const TOAST_TOP_RIGHT_ID: &str = "cfg:toast_top_right";
+pub const TOAST_BOTTOM_LEFT_ID: &str = "cfg:toast_bottom_left";
+pub const TOAST_BOTTOM_RIGHT_ID: &str = "cfg:toast_bottom_right";
 #[cfg(windows)]
 pub const AUTOSTART_ID: &str = "cfg:autostart";
+
+pub fn toast_position_from_menu_id(id: &str) -> Option<ToastPosition> {
+    match id {
+        TOAST_TOP_LEFT_ID => Some(ToastPosition::TopLeft),
+        TOAST_TOP_RIGHT_ID => Some(ToastPosition::TopRight),
+        TOAST_BOTTOM_LEFT_ID => Some(ToastPosition::BottomLeft),
+        TOAST_BOTTOM_RIGHT_ID => Some(ToastPosition::BottomRight),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigureSettings {
     pub notify_low: bool,
     pub notify_charged: bool,
     pub notify_connect: bool,
+    pub toast_position: ToastPosition,
     #[cfg(windows)]
     pub autostart: bool,
     pub show_developer: bool,
@@ -80,6 +96,10 @@ pub struct ConfigureMenuBar {
     pub notify_low: CheckMenuItem,
     pub notify_charged: CheckMenuItem,
     pub notify_connect: CheckMenuItem,
+    pub toast_top_left: CheckMenuItem,
+    pub toast_top_right: CheckMenuItem,
+    pub toast_bottom_left: CheckMenuItem,
+    pub toast_bottom_right: CheckMenuItem,
     #[cfg(windows)]
     pub autostart: CheckMenuItem,
 }
@@ -114,6 +134,52 @@ impl ConfigureMenuBar {
             .map_err(|e| format!("menu append: {e}"))?;
         notifications
             .append(&notify_charged)
+            .map_err(|e| format!("menu append: {e}"))?;
+        notifications
+            .append(&PredefinedMenuItem::separator())
+            .map_err(|e| format!("menu append: {e}"))?;
+
+        let position = Submenu::new("Position", true);
+        let toast_top_left = CheckMenuItem::with_id(
+            TOAST_TOP_LEFT_ID,
+            "Top left",
+            true,
+            settings.toast_position == ToastPosition::TopLeft,
+            None,
+        );
+        let toast_top_right = CheckMenuItem::with_id(
+            TOAST_TOP_RIGHT_ID,
+            "Top right",
+            true,
+            settings.toast_position == ToastPosition::TopRight,
+            None,
+        );
+        let toast_bottom_left = CheckMenuItem::with_id(
+            TOAST_BOTTOM_LEFT_ID,
+            "Bottom left",
+            true,
+            settings.toast_position == ToastPosition::BottomLeft,
+            None,
+        );
+        let toast_bottom_right = CheckMenuItem::with_id(
+            TOAST_BOTTOM_RIGHT_ID,
+            "Bottom right",
+            true,
+            settings.toast_position == ToastPosition::BottomRight,
+            None,
+        );
+        for item in [
+            &toast_top_left,
+            &toast_top_right,
+            &toast_bottom_left,
+            &toast_bottom_right,
+        ] {
+            position
+                .append(item)
+                .map_err(|e| format!("menu append: {e}"))?;
+        }
+        notifications
+            .append(&position)
             .map_err(|e| format!("menu append: {e}"))?;
         settings_menu
             .append(&notifications)
@@ -157,6 +223,10 @@ impl ConfigureMenuBar {
             notify_low,
             notify_charged,
             notify_connect,
+            toast_top_left,
+            toast_top_right,
+            toast_bottom_left,
+            toast_bottom_right,
             #[cfg(windows)]
             autostart,
         })
@@ -166,6 +236,14 @@ impl ConfigureMenuBar {
         self.notify_low.set_checked(settings.notify_low);
         self.notify_charged.set_checked(settings.notify_charged);
         self.notify_connect.set_checked(settings.notify_connect);
+        self.toast_top_left
+            .set_checked(settings.toast_position == ToastPosition::TopLeft);
+        self.toast_top_right
+            .set_checked(settings.toast_position == ToastPosition::TopRight);
+        self.toast_bottom_left
+            .set_checked(settings.toast_position == ToastPosition::BottomLeft);
+        self.toast_bottom_right
+            .set_checked(settings.toast_position == ToastPosition::BottomRight);
         #[cfg(windows)]
         self.autostart.set_checked(settings.autostart);
     }
@@ -291,7 +369,7 @@ pub struct ConfigureWindow {
     dirty: bool,
 }
 
-fn load_system_ui_font() -> Result<Font, String> {
+pub(crate) fn load_system_ui_font() -> Result<Font, String> {
     use font_kit::family_name::FamilyName;
     use font_kit::properties::Properties;
     use font_kit::source::SystemSource;

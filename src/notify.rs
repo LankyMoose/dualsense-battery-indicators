@@ -1,10 +1,7 @@
-//! Desktop notifications for connect, low battery, and charge-complete edges.
+//! Connect, low-battery, and charge-complete edge detection for overlay toasts.
 
-use crate::app_log;
-use crate::app_meta::DISPLAY_NAME;
 use crate::battery::{ControllerStatus, PowerState};
 use crate::prefs::Prefs;
-use notify_rust::Notification;
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -25,25 +22,29 @@ enum NotifyKind {
     Charged,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotifyEvent {
+    pub heading: String,
+    pub body: String,
+    pub percent: Option<u8>,
+}
+
 impl NotifyTracker {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Fire toasts for connect / low-battery / charge-complete transitions.
+    /// Collect overlay toasts for connect / low-battery / charge-complete transitions.
     pub fn evaluate(
         &mut self,
         previous: &[ControllerStatus],
         next: &[ControllerStatus],
         prefs: &Prefs,
-    ) {
-        for (controller, kind) in self.collect_events(previous, next, prefs) {
-            match kind {
-                NotifyKind::Connect => show_connect(controller),
-                NotifyKind::Low => show_low(controller),
-                NotifyKind::Charged => show_charged(controller),
-            }
-        }
+    ) -> Vec<NotifyEvent> {
+        self.collect_events(previous, next, prefs)
+            .into_iter()
+            .map(|(controller, kind)| format_event(controller, kind))
+            .collect()
     }
 
     fn collect_events<'a>(
@@ -98,38 +99,24 @@ impl NotifyTracker {
     }
 }
 
-fn show_connect(controller: &ControllerStatus) {
-    let body = format!(
-        "{} ({}) connected — {}%",
-        controller.product, controller.connection, controller.percent
-    );
-    show(DISPLAY_NAME, &body);
-}
-
-fn show_low(controller: &ControllerStatus) {
-    let body = format!(
-        "{} ({}) is low — {}%",
-        controller.product, controller.connection, controller.percent
-    );
-    show(DISPLAY_NAME, &body);
-}
-
-fn show_charged(controller: &ControllerStatus) {
-    let body = format!(
-        "{} ({}) finished charging",
-        controller.product, controller.connection
-    );
-    show(DISPLAY_NAME, &body);
-}
-
-fn show(summary: &str, body: &str) {
-    if let Err(err) = Notification::new()
-        .appname(DISPLAY_NAME)
-        .summary(summary)
-        .body(body)
-        .show()
-    {
-        app_log::warn(format!("notification failed: {err}"));
+fn format_event(controller: &ControllerStatus, kind: NotifyKind) -> NotifyEvent {
+    let heading = format!("{} ({})", controller.product, controller.connection);
+    match kind {
+        NotifyKind::Connect => NotifyEvent {
+            heading,
+            body: format!("connected — {}%", controller.percent),
+            percent: Some(controller.percent),
+        },
+        NotifyKind::Low => NotifyEvent {
+            heading,
+            body: format!("is low — {}%", controller.percent),
+            percent: Some(controller.percent),
+        },
+        NotifyKind::Charged => NotifyEvent {
+            heading,
+            body: "finished charging".to_string(),
+            percent: Some(100),
+        },
     }
 }
 
@@ -159,6 +146,7 @@ mod tests {
             notify_low,
             notify_charged,
             notify_connect,
+            toast_position: Default::default(),
             spectrum: Default::default(),
         }
     }

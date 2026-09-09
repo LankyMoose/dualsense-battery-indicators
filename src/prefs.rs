@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastPosition {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default = "default_true")]
@@ -15,6 +25,8 @@ pub struct Prefs {
     pub notify_charged: bool,
     #[serde(default = "default_true")]
     pub notify_connect: bool,
+    #[serde(default)]
+    pub toast_position: ToastPosition,
     #[serde(default)]
     pub spectrum: BatterySpectrum,
 }
@@ -29,6 +41,7 @@ impl Default for Prefs {
             notify_low: true,
             notify_charged: true,
             notify_connect: true,
+            toast_position: ToastPosition::default(),
             spectrum: BatterySpectrum::DEFAULT,
         }
     }
@@ -104,4 +117,26 @@ fn prefs_path() -> PathBuf {
     }
 
     PathBuf::from(format!("{PKG_NAME}-prefs.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_prefs_default_to_top_right() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notify_low":true,"notify_charged":true,"notify_connect":true}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.toast_position, ToastPosition::TopRight);
+    }
+
+    #[test]
+    fn toast_position_uses_stable_snake_case_names() {
+        assert_eq!(
+            serde_json::to_string(&ToastPosition::BottomLeft).unwrap(),
+            r#""bottom_left""#
+        );
+    }
 }

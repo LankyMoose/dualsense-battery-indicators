@@ -10,7 +10,8 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Tooltip shows how many controllers are connected
 - Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
 - **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
-- Desktop notifications when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (Configure → Settings → **Notifications**; on by default)
+- Steam-style overlay toasts when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (Configure → Settings → **Notifications**; on by default)
+- Toasts slide vertically in from any configurable screen corner, stay above borderless-fullscreen games, and slide away on click, Escape, or automatically after five seconds
 - **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
@@ -66,9 +67,10 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
-- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
+- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/position + lightbar spectrum)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
 - Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
+- Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
 
 ## Platform support
 
@@ -83,12 +85,10 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - GTK 3 development libraries (for tray)
 - `libhidapi` / pkg-config as required by the `hidapi` crate
 - Permission to open the DualSense HID device (udev rule or group membership)
-- A desktop notification daemon (e.g. the usual DE notification service) for toasts
 
 ### macOS
 
 - Grant Input Monitoring / accessibility only if macOS prompts for HID access
-- macOS may prompt once for notification permission
 - Autostart is not automated; use Login Items manually if desired
 
 ## Battery accuracy
@@ -119,6 +119,12 @@ git push origin v0.1.10
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+
+## Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+Battery status, notification preferences, lightbar colors, and remembered controllers stay on the local machine (`prefs.json`, `controllers.json`, and `app.log` under the app data directory). Toasts are rendered locally by the app. There is no telemetry, account, or network API.
 
 ## License
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-09-10
+
+### Added
+
+- Steam-style, always-on-top overlay toasts replace OS notifications for controller connect, disconnect, low-battery, and charged events.
+- Configure’s Toast position controls select any screen corner and immediately preview the placement.
+- Left-clicking the tray icon opens an anchored controller popup with live and remembered pads, battery state, click-to-identify rows, per-controller Remember controls, and a Settings shortcut (Windows and macOS).
+
+### Changed
+
+- Toasts slide vertically in and out from their configured screen edge, dismiss on click, Escape, or automatically after five seconds, and queue when multiple controller events occur together.
+- Configure now uses the same dark visual language as overlay toasts, with custom window chrome and notification, position, autostart, lightbar, and developer controls directly in the window.
+- Configure’s custom title bar is more compact.
+- The native right-click tray menu now contains only **Settings** and **Exit**; controller status and actions moved to the reusable dark popup.
+- Configure, controller popup, and toast spacing now comes from shared Taffy Flexbox layouts, design tokens, and measured text bounds instead of independent absolute coordinates; long labels are ellipsized and toast margins scale with monitor DPI.
+- Configure is now a compact single-column window with concise section headings, a 16:9 toast-position stage with toast-shaped corner selectors, and an animated single-open accordion layout with a fixed height sized to its tallest panel. Configure and the controller popup now share the same compact header height and title treatment.
+- Lightbar colors now use an interactive 2–5 stop gradient editor that is always fully shown when the Lightbar accordion panel is active: select and drag stops along the spectrum, click empty bar areas to add stops, drag a stop away to remove it, and apply edits immediately (drag commits on mouse up). Legacy three-field spectrum prefs migrate automatically.
+
 ## [0.1.10] - 2026-08-30
 
 ### Added
@@ -100,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.11]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.7...v0.1.8

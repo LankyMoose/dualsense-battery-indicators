@@ -1,312 +1,605 @@
-//! Softbuffer Configure window: lightbar spectrum editor + native menu bar.
+//! Custom-painted dark configuration window.
 
 use crate::app_meta::DISPLAY_NAME;
 use crate::color::{BatterySpectrum, Rgb, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::Preset;
+use crate::prefs::ToastPosition;
+use crate::ui::layout::{self, Rect};
+use crate::ui::{self, Framebuffer};
 use fontdue::Font;
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
-#[cfg(feature = "dev-emulate")]
-use tray_icon::menu::MenuItem;
-use tray_icon::menu::{CheckMenuItem, Menu, Submenu};
+use std::time::{Duration, Instant};
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
-#[cfg(windows)]
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-/// ~⅔ of the previous 460px width.
-const WIN_W: f64 = 308.0;
-const PAD: f64 = 12.0;
-const CONTENT_W: f64 = WIN_W - PAD * 2.0;
-const GAP: f64 = 8.0;
-const HUE_W: f64 = 14.0;
-/// Saturation/value square is 16:9 inside the picker panel.
-const SV_W: f64 = CONTENT_W - 24.0 - HUE_W - GAP;
-const SV_H: f64 = SV_W * 9.0 / 16.0;
-const PREVIEW_H: f64 = 68.0;
-const STOP_H: f64 = 102.0;
-const PICKER_HEADER: f64 = 28.0;
-const PICKER_H: f64 = 12.0 + PICKER_HEADER + GAP + SV_H + 12.0;
-const BTN_H: f64 = 32.0;
-const WIN_H: f64 = 18.0 // top
-    + 44.0 // title + subtitle block
-    + GAP
-    + PREVIEW_H
-    + GAP
-    + STOP_H
-    + GAP
-    + PICKER_H
-    + GAP
-    + BTN_H
-    + 16.0; // bottom padding
-/// Logical pixel sizes for UI text (scaled by the window DPI factor).
-const FONT_TITLE: f32 = 18.0;
-const FONT_BODY: f32 = 12.0;
-const FONT_SMALL: f32 = 11.0;
-
-const BG: u32 = rgb_u32(245, 246, 248);
-const PANEL: u32 = rgb_u32(255, 255, 255);
-const INK: u32 = rgb_u32(28, 32, 40);
-const MUTED: u32 = rgb_u32(100, 108, 120);
-const LINE: u32 = rgb_u32(210, 216, 224);
-const ACCENT: u32 = rgb_u32(0, 90, 255);
-const BTN_BG: u32 = rgb_u32(236, 239, 244);
-const BTN_BG_HOT: u32 = rgb_u32(0, 90, 255);
-const BTN_INK_HOT: u32 = rgb_u32(255, 255, 255);
-
-pub const NOTIFY_LOW_ID: &str = "cfg:notify_low";
-pub const NOTIFY_CHARGED_ID: &str = "cfg:notify_charged";
-pub const NOTIFY_CONNECT_ID: &str = "cfg:notify_connect";
 #[cfg(windows)]
-pub const AUTOSTART_ID: &str = "cfg:autostart";
+use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+
+const WIN_W: f64 = 320.0;
+const FONT_HEADING: f32 = 15.0;
+const FONT_BODY: f32 = 12.0;
+#[cfg(not(windows))]
+const FONT_SMALL: f32 = 10.5;
+const ACCORDION_HEADER_H: f64 = 22.0;
+const ACCORDION_GAP: f64 = 6.0;
+const ACCORDION_ANIM_MS: u64 = 180;
+const HEADER_TITLE_PAD_X: f64 = 12.0;
+const CONTENT_PAD_X: f64 = 12.0;
+const CONTENT_PAD_Y: f64 = 8.0;
+const PREVIEW_H: f64 = 72.0;
+const PICKER_H: f64 = 146.0;
+const RESET_H: f64 = 32.0;
+const SYSTEM_ROW_H: f64 = 32.0;
+const NOTIFICATION_ROW_H: f64 = 28.0;
+/// Matches the real toast window (`toast.rs` WIDTH / HEIGHT).
+const TOAST_ASPECT: f64 = 360.0 / 88.0;
+const POSITION_TOAST_W: f64 = 56.0;
+const POSITION_TOAST_MARGIN: f64 = 8.0;
+const POSITION_STAGE_DARK: u32 = ui::rgb(15, 17, 22);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationSetting {
+    Connect,
+    Disconnect,
+    Low,
+    Charged,
+}
+
+pub enum ConfigureAction {
+    None,
+    ApplySpectrum(BatterySpectrum),
+    SetNotification(NotificationSetting, bool),
+    SelectToastPosition(ToastPosition),
+    #[cfg(windows)]
+    SetAutostart(bool),
+    #[cfg(feature = "dev-emulate")]
+    DeveloperPreset(Preset),
+    Closed,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigureSettings {
     pub notify_low: bool,
     pub notify_charged: bool,
     pub notify_connect: bool,
+    pub notify_disconnect: bool,
+    pub toast_position: ToastPosition,
     #[cfg(windows)]
     pub autostart: bool,
     pub show_developer: bool,
-}
-
-/// Native window menu bar + check items we keep alive for state sync.
-pub struct ConfigureMenuBar {
-    pub menu: Menu,
-    pub notify_low: CheckMenuItem,
-    pub notify_charged: CheckMenuItem,
-    pub notify_connect: CheckMenuItem,
-    #[cfg(windows)]
-    pub autostart: CheckMenuItem,
-}
-
-impl ConfigureMenuBar {
-    pub fn build(settings: ConfigureSettings) -> Result<Self, String> {
-        let menu = Menu::new();
-
-        let settings_menu = Submenu::new("Settings", true);
-        let notifications = Submenu::new("Notifications", true);
-        let notify_connect = CheckMenuItem::with_id(
-            NOTIFY_CONNECT_ID,
-            "On connect",
-            true,
-            settings.notify_connect,
-            None,
-        );
-        let notify_low =
-            CheckMenuItem::with_id(NOTIFY_LOW_ID, "When low", true, settings.notify_low, None);
-        let notify_charged = CheckMenuItem::with_id(
-            NOTIFY_CHARGED_ID,
-            "When charged",
-            true,
-            settings.notify_charged,
-            None,
-        );
-        notifications
-            .append(&notify_connect)
-            .map_err(|e| format!("menu append: {e}"))?;
-        notifications
-            .append(&notify_low)
-            .map_err(|e| format!("menu append: {e}"))?;
-        notifications
-            .append(&notify_charged)
-            .map_err(|e| format!("menu append: {e}"))?;
-        settings_menu
-            .append(&notifications)
-            .map_err(|e| format!("menu append: {e}"))?;
-
-        #[cfg(windows)]
-        let autostart = {
-            let item = CheckMenuItem::with_id(
-                AUTOSTART_ID,
-                "Start with Windows",
-                true,
-                settings.autostart,
-                None,
-            );
-            settings_menu
-                .append(&item)
-                .map_err(|e| format!("menu append: {e}"))?;
-            item
-        };
-
-        menu.append(&settings_menu)
-            .map_err(|e| format!("menu append: {e}"))?;
-
-        #[cfg(feature = "dev-emulate")]
-        if settings.show_developer {
-            let developer = Submenu::new("Developer", true);
-            for preset in Preset::ALL {
-                let item = MenuItem::with_id(preset.menu_id(), preset.menu_label(), true, None);
-                developer
-                    .append(&item)
-                    .map_err(|e| format!("menu append: {e}"))?;
-            }
-            menu.append(&developer)
-                .map_err(|e| format!("menu append: {e}"))?;
-        }
-        #[cfg(not(feature = "dev-emulate"))]
-        let _ = settings.show_developer;
-
-        Ok(Self {
-            menu,
-            notify_low,
-            notify_charged,
-            notify_connect,
-            #[cfg(windows)]
-            autostart,
-        })
-    }
-
-    pub fn sync_checks(&self, settings: ConfigureSettings) {
-        self.notify_low.set_checked(settings.notify_low);
-        self.notify_charged.set_checked(settings.notify_charged);
-        self.notify_connect.set_checked(settings.notify_connect);
-        #[cfg(windows)]
-        self.autostart.set_checked(settings.autostart);
-    }
-
-    pub fn attach(&self, window: &Window) -> Result<(), String> {
-        #[cfg(windows)]
-        {
-            let hwnd = win32_hwnd(window).ok_or_else(|| "missing Win32 hwnd".to_string())?;
-            // SAFETY: hwnd comes from a live winit Window.
-            unsafe {
-                self.menu
-                    .init_for_hwnd(hwnd)
-                    .map_err(|e| format!("init menu for hwnd: {e}"))?;
-            }
-            Ok(())
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let _ = window;
-            self.menu.init_for_nsapp();
-            Ok(())
-        }
-
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            // winit windows are not GTK windows, so muda cannot attach a menubar here.
-            let _ = window;
-            Ok(())
-        }
-    }
-
-    pub fn detach(&self, window: &Window) {
-        #[cfg(windows)]
-        {
-            if let Some(hwnd) = win32_hwnd(window) {
-                // SAFETY: hwnd came from the same Window we attached to.
-                let _ = unsafe { self.menu.remove_for_hwnd(hwnd) };
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let _ = window;
-            self.menu.remove_for_nsapp();
-        }
-
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let _ = window;
-        }
-    }
-}
-
-#[cfg(windows)]
-fn win32_hwnd(window: &Window) -> Option<isize> {
-    let handle = window.window_handle().ok()?;
-    match handle.as_raw() {
-        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stop {
-    Full,
-    Mid,
-    Empty,
-}
-
-impl Stop {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Full => "Full",
-            Self::Mid => "Mid",
-            Self::Empty => "Empty",
-        }
-    }
-
-    fn hint(self) -> &'static str {
-        match self {
-            Self::Full => "100%",
-            Self::Mid => "50%",
-            Self::Empty => "0%",
-        }
-    }
-
-    fn all() -> [Self; 3] {
-        [Self::Full, Self::Mid, Self::Empty]
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum DragKind {
     Sv,
     Hue,
+    Stop { index: usize },
 }
+
+const STOP_HANDLE_W: f64 = 18.0;
+const STOP_HANDLE_H: f64 = 28.0;
+const STOP_REMOVE_DISTANCE: f64 = 28.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ButtonId {
-    Reset,
-    Apply,
+enum AccordionSection {
+    System,
+    Notifications,
+    ToastPosition,
+    LightbarColors,
+    #[cfg(feature = "dev-emulate")]
+    Developer,
 }
 
-pub enum ConfigureAction {
-    None,
-    ApplySpectrum(BatterySpectrum),
-    Closed,
+impl AccordionSection {
+    fn visible(show_developer: bool) -> Vec<Self> {
+        let sections = vec![
+            Self::System,
+            Self::Notifications,
+            Self::ToastPosition,
+            Self::LightbarColors,
+        ];
+        #[cfg(not(feature = "dev-emulate"))]
+        let _ = show_developer;
+        #[cfg(feature = "dev-emulate")]
+        let mut sections = sections;
+        #[cfg(feature = "dev-emulate")]
+        if show_developer {
+            sections.push(Self::Developer);
+        }
+        sections
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Notifications => "Notifications",
+            Self::ToastPosition => "Toast position",
+            Self::LightbarColors => "Lightbar colors",
+            #[cfg(feature = "dev-emulate")]
+            Self::Developer => "Developer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AccordionAnimation {
+    from: AccordionSection,
+    to: AccordionSection,
+    started_at: Instant,
+}
+
+impl AccordionAnimation {
+    fn progress(self) -> f64 {
+        let elapsed = self.started_at.elapsed().as_secs_f64();
+        let raw =
+            (elapsed / Duration::from_millis(ACCORDION_ANIM_MS).as_secs_f64()).clamp(0.0, 1.0);
+        1.0 - (1.0 - raw).powi(3)
+    }
 }
 
 pub struct ConfigureWindow {
     window: Rc<Window>,
     surface: Surface<OwnedDisplayHandle, Rc<Window>>,
-    menu_bar: ConfigureMenuBar,
     font: Font,
+    settings: ConfigureSettings,
     draft: BatterySpectrum,
-    selected: Stop,
+    selected: usize,
     hue: f32,
     sat: f32,
     val: f32,
     drag: Option<DragKind>,
+    remove_armed: bool,
+    pending_commit: bool,
     cursor: Option<(f64, f64)>,
-    dirty: bool,
+    expanded_section: AccordionSection,
+    accordion_anim: Option<AccordionAnimation>,
 }
 
-fn load_system_ui_font() -> Result<Font, String> {
-    use font_kit::family_name::FamilyName;
-    use font_kit::properties::Properties;
-    use font_kit::source::SystemSource;
+#[derive(Clone)]
+struct PaintState {
+    settings: ConfigureSettings,
+    draft: BatterySpectrum,
+    selected: usize,
+    hue: f32,
+    sat: f32,
+    val: f32,
+    cursor: Option<(f64, f64)>,
+    remove_armed: bool,
+    dragging_stop: Option<usize>,
+    expanded_section: AccordionSection,
+    accordion_anim: Option<AccordionAnimation>,
+}
 
-    let handle = SystemSource::new()
-        .select_best_match(&[FamilyName::SansSerif], &Properties::new())
-        .map_err(|e| format!("select system UI font: {e}"))?;
-    let font = handle
-        .load()
-        .map_err(|e| format!("load system UI font: {e}"))?;
-    let data = font
-        .copy_font_data()
-        .ok_or_else(|| "system UI font has no accessible font data".to_string())?;
-    Font::from_bytes(data.as_slice(), fontdue::FontSettings::default())
-        .map_err(|e| format!("parse system UI font: {e}"))
+impl PaintState {
+    fn selected_stop(&self) -> Option<&crate::color::GradientStop> {
+        self.draft.stops.get(self.selected)
+    }
+
+    fn accent(&self) -> Rgb {
+        self.draft.accent()
+    }
+
+    fn section_amount(&self, section: AccordionSection) -> f64 {
+        match self.accordion_anim {
+            Some(anim) => {
+                let progress = anim.progress();
+                if section == anim.from {
+                    1.0 - progress
+                } else if section == anim.to {
+                    progress
+                } else {
+                    0.0
+                }
+            }
+            None => (section == self.expanded_section) as u8 as f64,
+        }
+    }
+
+    fn is_animating(&self) -> bool {
+        self.accordion_anim
+            .is_some_and(|anim| anim.progress() < 1.0)
+    }
+
+    fn notification_enabled(&self, setting: NotificationSetting) -> bool {
+        match setting {
+            NotificationSetting::Connect => self.settings.notify_connect,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect,
+            NotificationSetting::Low => self.settings.notify_low,
+            NotificationSetting::Charged => self.settings.notify_charged,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ConfigureLayout {
+    title_drag: Rect,
+    title_icon: Rect,
+    title_label: Rect,
+    minimize: Rect,
+    close: Rect,
+    sections: Vec<SectionLayout>,
+    notification_rows: [Rect; 4],
+    notification_labels: [Rect; 4],
+    notification_switches: [Rect; 4],
+    position_stage: Rect,
+    position_choices: [Rect; 4],
+    autostart_row: Rect,
+    autostart_label: Rect,
+    autostart_switch: Rect,
+    preview: Rect,
+    spectrum_bar: Rect,
+    picker: Rect,
+    picker_label: Rect,
+    sv: Rect,
+    hue: Rect,
+    reset: Rect,
+    height: f64,
+    #[cfg(feature = "dev-emulate")]
+    developer_buttons: Vec<Rect>,
+}
+
+#[derive(Clone, Copy)]
+struct StopHandleLayout {
+    bounds: Rect,
+    tip: (f64, f64),
+    swatch: Rect,
+}
+
+#[derive(Clone, Copy)]
+struct SectionLayout {
+    section: AccordionSection,
+    header: Rect,
+    content: Rect,
+    full_height: f64,
+    visible_height: f64,
+}
+
+impl ConfigureLayout {
+    fn compute(state: &PaintState, show_developer: bool) -> Self {
+        let title_drag = Rect::new(
+            layout::SPACE_3,
+            layout::SPACE_1,
+            WIN_W
+                - layout::SPACE_3
+                - (layout::WINDOW_HEADER_ACTION_SIZE * 2.0 + layout::SPACE_1 * 3.0),
+            layout::WINDOW_HEADER_HEIGHT,
+        );
+        let title_icon = Rect::new(
+            title_drag.x,
+            layout::SPACE_1 + 4.0,
+            layout::WINDOW_HEADER_ICON_SIZE,
+            layout::WINDOW_HEADER_ICON_SIZE,
+        );
+        let title_label = Rect::new(
+            title_icon.right() + layout::WINDOW_HEADER_PADDING,
+            layout::SPACE_1,
+            title_drag.right() - title_icon.right() - layout::WINDOW_HEADER_PADDING,
+            layout::WINDOW_HEADER_HEIGHT - layout::SPACE_1 * 2.0,
+        );
+        let minimize = Rect::new(
+            WIN_W - layout::WINDOW_HEADER_ACTION_SIZE * 2.0 - layout::SPACE_1 * 2.0,
+            layout::SPACE_1,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+        );
+        let close = Rect::new(
+            WIN_W - layout::WINDOW_HEADER_ACTION_SIZE - layout::SPACE_1,
+            layout::SPACE_1,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+            layout::WINDOW_HEADER_ACTION_SIZE,
+        );
+
+        let sections = AccordionSection::visible(show_developer);
+        let content_x = 0.0;
+        let content_w = WIN_W;
+        let base_height = layout::WINDOW_HEADER_HEIGHT
+            + sections.len() as f64 * ACCORDION_HEADER_H
+            + (sections.len().saturating_sub(1)) as f64 * ACCORDION_GAP;
+        let max_panel_h = sections
+            .iter()
+            .map(|section| section_full_height(*section))
+            .fold(0.0, f64::max);
+        let window_h = base_height + max_panel_h;
+
+        let mut y = layout::WINDOW_HEADER_HEIGHT;
+        let mut section_layouts = Vec::new();
+        for (index, section) in sections.iter().copied().enumerate() {
+            let header = Rect::new(content_x, y, content_w, ACCORDION_HEADER_H);
+            y += ACCORDION_HEADER_H;
+            let full_height = section_full_height(section);
+            let visible_height = full_height * state.section_amount(section);
+            let content = Rect::new(content_x, y, content_w, full_height);
+            section_layouts.push(SectionLayout {
+                section,
+                header,
+                content,
+                full_height,
+                visible_height,
+            });
+            y += visible_height;
+            if index + 1 < sections.len() {
+                y += ACCORDION_GAP;
+            }
+        }
+
+        let notifications = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::Notifications)
+            .copied()
+            .unwrap();
+        let system = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::System)
+            .copied()
+            .unwrap();
+        let position = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::ToastPosition)
+            .copied()
+            .unwrap();
+        let lightbar = section_layouts
+            .iter()
+            .find(|layout| layout.section == AccordionSection::LightbarColors)
+            .copied()
+            .unwrap();
+
+        let notification_rows = std::array::from_fn(|index| {
+            Rect::new(
+                notifications.content.x + CONTENT_PAD_X,
+                notifications.content.y + CONTENT_PAD_Y + index as f64 * NOTIFICATION_ROW_H,
+                notifications.content.w - CONTENT_PAD_X * 2.0,
+                NOTIFICATION_ROW_H,
+            )
+        });
+        let notification_labels =
+            notification_rows.map(|row| Rect::new(row.x, row.y, row.w - 46.0, row.h));
+        let notification_switches = notification_rows
+            .map(|row| Rect::new(row.right() - 38.0, row.y + (row.h - 20.0) / 2.0, 38.0, 20.0));
+
+        let system_row = Rect::new(
+            system.content.x + CONTENT_PAD_X,
+            system.content.y + CONTENT_PAD_Y,
+            system.content.w - CONTENT_PAD_X * 2.0,
+            SYSTEM_ROW_H,
+        );
+        let system_label = Rect::new(
+            system_row.x,
+            system_row.y,
+            system_row.w - 46.0,
+            system_row.h,
+        );
+        let system_switch = Rect::new(
+            system_row.right() - 38.0,
+            system_row.y + (system_row.h - 20.0) / 2.0,
+            38.0,
+            20.0,
+        );
+
+        let position_stage = position_stage_rect(position.content);
+        let toast_h = POSITION_TOAST_W / TOAST_ASPECT;
+        let position_choices = [
+            Rect::new(
+                position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.y + POSITION_TOAST_MARGIN,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.right() - POSITION_TOAST_MARGIN - POSITION_TOAST_W,
+                position_stage.y + POSITION_TOAST_MARGIN,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                position_stage.right() - POSITION_TOAST_MARGIN - POSITION_TOAST_W,
+                position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+        ];
+
+        let preview = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            lightbar.content.y + CONTENT_PAD_Y,
+            lightbar.content.w - CONTENT_PAD_X * 2.0,
+            PREVIEW_H,
+        );
+        let spectrum_bar = Rect::new(
+            preview.x + CONTENT_PAD_X,
+            preview.y + CONTENT_PAD_X,
+            preview.w - CONTENT_PAD_X * 2.0,
+            24.0,
+        );
+        let picker = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            preview.bottom() + ACCORDION_GAP,
+            lightbar.content.w - CONTENT_PAD_X * 2.0,
+            PICKER_H,
+        );
+        let picker_label = Rect::new(picker.x + 12.0, picker.y + 10.0, picker.w - 24.0, 18.0);
+        let sv = Rect::new(picker.x + 12.0, picker.y + 34.0, picker.w - 52.0, 100.0);
+        let hue = Rect::new(picker.right() - 30.0, picker.y + 34.0, 18.0, 100.0);
+        let reset = Rect::new(
+            lightbar.content.x + CONTENT_PAD_X,
+            picker.bottom() + ACCORDION_GAP,
+            124.0,
+            RESET_H,
+        );
+
+        #[cfg(feature = "dev-emulate")]
+        let developer_buttons = {
+            if let Some(dev) = section_layouts
+                .iter()
+                .find(|layout| layout.section == AccordionSection::Developer)
+                .copied()
+            {
+                let mut buttons = Vec::new();
+                let inner_w = dev.content.w - CONTENT_PAD_X * 2.0;
+                let bw = (inner_w - layout::SPACE_2 * 3.0) / 4.0;
+                let by = dev.content.y + CONTENT_PAD_Y;
+                for row in 0..2 {
+                    for col in 0..4 {
+                        buttons.push(Rect::new(
+                            dev.content.x + CONTENT_PAD_X + col as f64 * (bw + layout::SPACE_2),
+                            by + row as f64 * (30.0 + 5.0),
+                            bw,
+                            30.0,
+                        ));
+                    }
+                }
+                buttons
+            } else {
+                Vec::new()
+            }
+        };
+
+        Self {
+            title_drag,
+            title_icon,
+            title_label,
+            minimize,
+            close,
+            sections: section_layouts,
+            notification_rows,
+            notification_labels,
+            notification_switches,
+            position_stage,
+            position_choices,
+            autostart_row: system_row,
+            autostart_label: system_label,
+            autostart_switch: system_switch,
+            preview,
+            spectrum_bar,
+            picker,
+            picker_label,
+            sv,
+            hue,
+            reset,
+            height: window_h,
+            #[cfg(feature = "dev-emulate")]
+            developer_buttons,
+        }
+    }
+
+    fn notification_row(&self, setting: NotificationSetting) -> Rect {
+        self.notification_rows[notification_index(setting)]
+    }
+
+    fn position_choice(&self, position: ToastPosition) -> Rect {
+        self.position_choices[position_index(position)]
+    }
+
+    #[cfg(test)]
+    fn section(&self, section: AccordionSection) -> SectionLayout {
+        self.sections
+            .iter()
+            .find(|layout| layout.section == section)
+            .copied()
+            .unwrap_or(SectionLayout {
+                section,
+                header: Rect::default(),
+                content: Rect::default(),
+                full_height: 0.0,
+                visible_height: 0.0,
+            })
+    }
+
+    fn stop_handles_for(&self, spectrum: &BatterySpectrum) -> Vec<StopHandleLayout> {
+        spectrum
+            .stops
+            .iter()
+            .map(|stop| stop_handle_layout(self.spectrum_bar, stop.percent))
+            .collect()
+    }
+}
+
+fn percent_from_bar_x(bar: Rect, x: f64) -> u8 {
+    if bar.w <= 0.0 {
+        return 100;
+    }
+    let t = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
+    (100.0 - t * 100.0).round() as u8
+}
+
+fn bar_x_from_percent(bar: Rect, percent: u8) -> f64 {
+    bar.x + (1.0 - percent.min(100) as f64 / 100.0) * bar.w
+}
+
+fn stop_handle_rect(bar: Rect, percent: u8) -> Rect {
+    let cx = bar_x_from_percent(bar, percent);
+    Rect::new(
+        cx - STOP_HANDLE_W / 2.0,
+        bar.bottom() + 2.0,
+        STOP_HANDLE_W,
+        STOP_HANDLE_H,
+    )
+}
+
+fn stop_handle_layout(bar: Rect, percent: u8) -> StopHandleLayout {
+    let bounds = stop_handle_rect(bar, percent);
+    let cx = bounds.x + bounds.w / 2.0;
+    StopHandleLayout {
+        bounds,
+        tip: (cx, bar.bottom()),
+        swatch: Rect::new(bounds.x + 3.0, bounds.y + 10.0, 12.0, 12.0),
+    }
+}
+
+fn section_full_height(section: AccordionSection) -> f64 {
+    match section {
+        AccordionSection::System => CONTENT_PAD_Y * 2.0 + SYSTEM_ROW_H,
+        AccordionSection::Notifications => CONTENT_PAD_Y * 2.0 + NOTIFICATION_ROW_H * 4.0,
+        AccordionSection::ToastPosition => {
+            let stage = position_stage_rect(Rect::new(0.0, 0.0, WIN_W, 0.0));
+            CONTENT_PAD_Y * 2.0 + stage.h
+        }
+        AccordionSection::LightbarColors => {
+            CONTENT_PAD_Y * 2.0 + PREVIEW_H + ACCORDION_GAP + PICKER_H + ACCORDION_GAP + RESET_H
+        }
+        #[cfg(feature = "dev-emulate")]
+        AccordionSection::Developer => CONTENT_PAD_Y * 2.0 + 65.0,
+    }
+}
+
+fn position_stage_rect(content: Rect) -> Rect {
+    let width = content.w - CONTENT_PAD_X * 2.0;
+    let height = width * 9.0 / 16.0;
+    Rect::new(
+        content.x + CONTENT_PAD_X,
+        content.y + CONTENT_PAD_Y,
+        width,
+        height,
+    )
+}
+
+fn notification_index(setting: NotificationSetting) -> usize {
+    match setting {
+        NotificationSetting::Connect => 0,
+        NotificationSetting::Disconnect => 1,
+        NotificationSetting::Low => 2,
+        NotificationSetting::Charged => 3,
+    }
+}
+
+fn position_index(position: ToastPosition) -> usize {
+    match position {
+        ToastPosition::TopLeft => 0,
+        ToastPosition::TopRight => 1,
+        ToastPosition::BottomLeft => 2,
+        ToastPosition::BottomRight => 3,
+    }
 }
 
 impl ConfigureWindow {
@@ -316,40 +609,60 @@ impl ConfigureWindow {
         initial: BatterySpectrum,
         settings: ConfigureSettings,
     ) -> Result<Self, String> {
-        let menu_bar = ConfigureMenuBar::build(settings)?;
-        let font = load_system_ui_font()?;
-
+        let font = ui::load_system_ui_font()?;
+        let expanded_section = AccordionSection::visible(settings.show_developer)
+            .into_iter()
+            .next()
+            .unwrap_or(AccordionSection::System);
+        let preview_state = PaintState {
+            settings,
+            draft: initial.clone(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section,
+            accordion_anim: None,
+        };
+        let layout = ConfigureLayout::compute(&preview_state, settings.show_developer);
         let attrs = WindowAttributes::default()
             .with_title(format!("{DISPLAY_NAME} — Configure"))
-            .with_inner_size(LogicalSize::new(WIN_W, WIN_H))
-            .with_resizable(false);
+            .with_inner_size(LogicalSize::new(WIN_W, layout.height))
+            .with_resizable(false)
+            .with_decorations(false);
+        #[cfg(windows)]
+        let attrs = attrs
+            .with_undecorated_shadow(true)
+            .with_corner_preference(CornerPreference::Round);
 
         let window = Rc::new(
             event_loop
                 .create_window(attrs)
                 .map_err(|e| format!("create configure window: {e}"))?,
         );
-
-        menu_bar.attach(&window)?;
-
         let context = Context::new(display).map_err(|e| format!("softbuffer context: {e}"))?;
         let surface = Surface::new(&context, window.clone())
             .map_err(|e| format!("softbuffer surface: {e}"))?;
-
-        let (hue, sat, val) = initial.full.to_hsv();
+        let (hue, sat, val) = initial.accent().to_hsv();
         let editor = Self {
             window,
             surface,
-            menu_bar,
             font,
+            settings,
             draft: initial,
-            selected: Stop::Full,
+            selected: 0,
             hue,
             sat,
             val,
             drag: None,
+            remove_armed: false,
+            pending_commit: false,
             cursor: None,
-            dirty: false,
+            expanded_section,
+            accordion_anim: None,
         };
         editor.window.request_redraw();
         Ok(editor)
@@ -359,10 +672,6 @@ impl ConfigureWindow {
         self.window.id()
     }
 
-    pub fn menu_bar(&self) -> &ConfigureMenuBar {
-        &self.menu_bar
-    }
-
     pub fn focus(&self) {
         self.window.set_visible(true);
         self.window.focus_window();
@@ -370,16 +679,73 @@ impl ConfigureWindow {
     }
 
     pub fn sync_settings(&mut self, settings: ConfigureSettings) {
-        self.menu_bar.sync_checks(settings);
+        self.settings = settings;
+        self.resize_to_content();
+        self.window.request_redraw();
+    }
+
+    fn layout(&self) -> Result<ConfigureLayout, String> {
+        let state = PaintState {
+            settings: self.settings,
+            draft: self.draft.clone(),
+            selected: self.selected,
+            hue: self.hue,
+            sat: self.sat,
+            val: self.val,
+            cursor: self.cursor,
+            remove_armed: self.remove_armed,
+            dragging_stop: match self.drag {
+                Some(DragKind::Stop { index }) => Some(index),
+                _ => None,
+            },
+            expanded_section: self.expanded_section,
+            accordion_anim: self.accordion_anim,
+        };
+        Ok(ConfigureLayout::compute(
+            &state,
+            self.settings.show_developer,
+        ))
+    }
+
+    fn resize_to_content(&self) {
+        let Ok(layout) = self.layout() else {
+            crate::app_log::warn("configure layout failed during resize");
+            return;
+        };
+        let (max_width, max_height) = self
+            .window
+            .current_monitor()
+            .map(|monitor| {
+                let scale = monitor.scale_factor().max(1.0);
+                let size = monitor.size();
+                (
+                    size.width as f64 / scale - layout::SPACE_5 * 2.0,
+                    size.height as f64 / scale - layout::SPACE_5 * 2.0,
+                )
+            })
+            .unwrap_or((WIN_W, layout.height));
+        let _ = self.window.request_inner_size(LogicalSize::new(
+            WIN_W.min(max_width),
+            layout.height.min(max_height),
+        ));
     }
 
     pub fn handle(&mut self, event: &WindowEvent) -> ConfigureAction {
         match event {
-            WindowEvent::CloseRequested => {
-                self.menu_bar.detach(&self.window);
+            WindowEvent::CloseRequested => return ConfigureAction::Closed,
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
+            {
                 return ConfigureAction::Closed;
             }
             WindowEvent::RedrawRequested => {
+                if self
+                    .accordion_anim
+                    .is_some_and(|anim| anim.progress() >= 1.0)
+                {
+                    self.accordion_anim = None;
+                }
                 if let Err(err) = self.paint() {
                     crate::app_log::warn(format!("configure UI paint failed: {err}"));
                 }
@@ -401,16 +767,18 @@ impl ConfigureWindow {
                 ..
             } => match state {
                 ElementState::Pressed => {
-                    if let Some(action) = self.on_press() {
-                        return action;
-                    }
+                    let action = self.on_press();
                     self.window.request_redraw();
+                    return action;
                 }
                 ElementState::Released => {
-                    self.drag = None;
+                    let action = self.on_release();
+                    self.window.request_redraw();
+                    return action;
                 }
             },
             WindowEvent::ScaleFactorChanged { .. } => {
+                self.resize_to_content();
                 self.window.request_redraw();
             }
             _ => {}
@@ -418,611 +786,969 @@ impl ConfigureWindow {
         ConfigureAction::None
     }
 
-    fn on_press(&mut self) -> Option<ConfigureAction> {
-        let (x, y) = self.cursor?;
+    fn on_release(&mut self) -> ConfigureAction {
+        let Some(drag) = self.drag.take() else {
+            return ConfigureAction::None;
+        };
+        if let DragKind::Stop { index } = drag {
+            if self.remove_armed {
+                if let Ok(next) = self.draft.remove_stop(index) {
+                    self.select_stop(next);
+                    self.remove_armed = false;
+                    self.pending_commit = false;
+                    return ConfigureAction::ApplySpectrum(self.draft.clone());
+                }
+            }
+        }
+        self.remove_armed = false;
+        if self.pending_commit {
+            self.pending_commit = false;
+            return ConfigureAction::ApplySpectrum(self.draft.clone());
+        }
+        ConfigureAction::None
+    }
 
-        for stop in Stop::all() {
-            if hit(stop_swatch_rect(stop), x, y) || hit(stop_label_rect(stop), x, y) {
-                self.select_stop(stop);
-                return None;
+    fn on_press(&mut self) -> ConfigureAction {
+        let Some((x, y)) = self.cursor else {
+            return ConfigureAction::None;
+        };
+        let Ok(layout) = self.layout() else {
+            crate::app_log::warn("configure layout failed during input");
+            return ConfigureAction::None;
+        };
+        if layout.close.contains(x, y) {
+            return ConfigureAction::Closed;
+        }
+        if layout.minimize.contains(x, y) {
+            self.window.set_minimized(true);
+            return ConfigureAction::None;
+        }
+        if layout.title_drag.contains(x, y) {
+            let _ = self.window.drag_window();
+            return ConfigureAction::None;
+        }
+
+        for section in &layout.sections {
+            if section.header.contains(x, y) {
+                if section.section != self.expanded_section {
+                    self.accordion_anim = Some(AccordionAnimation {
+                        from: self.expanded_section,
+                        to: section.section,
+                        started_at: Instant::now(),
+                    });
+                    self.expanded_section = section.section;
+                    self.window.request_redraw();
+                }
+                return ConfigureAction::None;
             }
         }
 
-        if hit(sv_rect(), x, y) {
-            self.drag = Some(DragKind::Sv);
-            self.apply_drag();
-            return None;
-        }
-        if hit(hue_rect(), x, y) {
-            self.drag = Some(DragKind::Hue);
-            self.apply_drag();
-            return None;
-        }
-
-        if hit(button_rect(ButtonId::Reset), x, y) {
-            self.draft = BatterySpectrum::DEFAULT;
-            self.select_stop(self.selected);
-            self.dirty = true;
-            return None;
-        }
-        if hit(button_rect(ButtonId::Apply), x, y) {
-            if !self.dirty {
-                return None;
+        if self.expanded_section == AccordionSection::Notifications {
+            for setting in [
+                NotificationSetting::Connect,
+                NotificationSetting::Disconnect,
+                NotificationSetting::Low,
+                NotificationSetting::Charged,
+            ] {
+                if layout.notification_row(setting).contains(x, y) {
+                    let enabled = !self.notification_enabled(setting);
+                    self.set_notification(setting, enabled);
+                    return ConfigureAction::SetNotification(setting, enabled);
+                }
             }
-            self.dirty = false;
-            return Some(ConfigureAction::ApplySpectrum(self.draft));
         }
 
-        None
+        if self.expanded_section == AccordionSection::ToastPosition {
+            for position in positions() {
+                if layout.position_choice(position).contains(x, y) {
+                    self.settings.toast_position = position;
+                    return ConfigureAction::SelectToastPosition(position);
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        if self.expanded_section == AccordionSection::System && layout.autostart_row.contains(x, y)
+        {
+            self.settings.autostart = !self.settings.autostart;
+            return ConfigureAction::SetAutostart(self.settings.autostart);
+        }
+
+        #[cfg(feature = "dev-emulate")]
+        if self.expanded_section == AccordionSection::Developer && self.settings.show_developer {
+            for (index, preset) in Preset::ALL.iter().copied().enumerate() {
+                if layout
+                    .developer_buttons
+                    .get(index)
+                    .is_some_and(|rect| rect.contains(x, y))
+                {
+                    return ConfigureAction::DeveloperPreset(preset);
+                }
+            }
+        }
+
+        if self.expanded_section == AccordionSection::LightbarColors {
+            let handles = layout.stop_handles_for(&self.draft);
+            for (index, handle) in handles.iter().enumerate() {
+                if handle.bounds.contains(x, y) {
+                    self.select_stop(index);
+                    self.drag = Some(DragKind::Stop { index });
+                    self.remove_armed = false;
+                    return ConfigureAction::None;
+                }
+            }
+            if layout.spectrum_bar.contains(x, y)
+                || (y >= layout.spectrum_bar.y
+                    && y <= layout.spectrum_bar.bottom() + STOP_HANDLE_H + 4.0
+                    && x >= layout.spectrum_bar.x
+                    && x <= layout.spectrum_bar.right())
+            {
+                let percent = percent_from_bar_x(layout.spectrum_bar, x);
+                match self.draft.add_stop_at(percent) {
+                    Ok(index) => {
+                        self.select_stop(index);
+                        return ConfigureAction::ApplySpectrum(self.draft.clone());
+                    }
+                    Err(_) => {
+                        if let Some(index) = self
+                            .draft
+                            .stops
+                            .iter()
+                            .position(|stop| stop.percent == percent)
+                        {
+                            self.select_stop(index);
+                        }
+                        return ConfigureAction::None;
+                    }
+                }
+            }
+            if layout.sv.contains(x, y) {
+                self.drag = Some(DragKind::Sv);
+                self.apply_drag();
+                return ConfigureAction::None;
+            }
+            if layout.hue.contains(x, y) {
+                self.drag = Some(DragKind::Hue);
+                self.apply_drag();
+                return ConfigureAction::None;
+            }
+            if layout.reset.contains(x, y) {
+                self.draft = BatterySpectrum::default_spectrum();
+                self.select_stop(0);
+                return ConfigureAction::ApplySpectrum(self.draft.clone());
+            }
+        }
+        ConfigureAction::None
     }
 
-    fn select_stop(&mut self, stop: Stop) {
-        self.selected = stop;
-        let color = self.color_of(stop);
-        let (h, s, v) = color.to_hsv();
-        self.hue = h;
-        self.sat = s;
-        self.val = v;
-    }
-
-    fn color_of(&self, stop: Stop) -> Rgb {
-        match stop {
-            Stop::Full => self.draft.full,
-            Stop::Mid => self.draft.mid,
-            Stop::Empty => self.draft.empty,
+    fn notification_enabled(&self, setting: NotificationSetting) -> bool {
+        match setting {
+            NotificationSetting::Connect => self.settings.notify_connect,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect,
+            NotificationSetting::Low => self.settings.notify_low,
+            NotificationSetting::Charged => self.settings.notify_charged,
         }
     }
 
-    fn set_color_of(&mut self, stop: Stop, color: Rgb) {
-        match stop {
-            Stop::Full => self.draft.full = color,
-            Stop::Mid => self.draft.mid = color,
-            Stop::Empty => self.draft.empty = color,
+    fn set_notification(&mut self, setting: NotificationSetting, enabled: bool) {
+        match setting {
+            NotificationSetting::Connect => self.settings.notify_connect = enabled,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect = enabled,
+            NotificationSetting::Low => self.settings.notify_low = enabled,
+            NotificationSetting::Charged => self.settings.notify_charged = enabled,
         }
-        self.dirty = true;
+    }
+
+    fn select_stop(&mut self, index: usize) {
+        let index = index.min(self.draft.stops.len().saturating_sub(1));
+        self.selected = index;
+        if let Some(stop) = self.draft.stops.get(index) {
+            let (hue, sat, val) = stop.color.to_hsv();
+            self.hue = hue;
+            self.sat = sat;
+            self.val = val;
+        }
+    }
+
+    fn set_selected_color(&mut self, color: Rgb) {
+        if self.draft.set_stop_color(self.selected, color).is_ok() {
+            self.pending_commit = true;
+        }
     }
 
     fn apply_drag(&mut self) {
         let Some((x, y)) = self.cursor else {
             return;
         };
+        let Ok(layout) = self.layout() else {
+            crate::app_log::warn("configure layout failed during drag");
+            return;
+        };
         match self.drag {
             Some(DragKind::Sv) => {
-                let r = sv_rect();
-                self.sat = ((x - r.x) / r.w).clamp(0.0, 1.0) as f32;
-                self.val = (1.0 - (y - r.y) / r.h).clamp(0.0, 1.0) as f32;
-                let color = hsv_to_rgb(self.hue, self.sat, self.val);
-                self.set_color_of(self.selected, color);
+                let rect = layout.sv;
+                self.sat = ((x - rect.x) / rect.w).clamp(0.0, 1.0) as f32;
+                self.val = (1.0 - (y - rect.y) / rect.h).clamp(0.0, 1.0) as f32;
+                self.set_selected_color(hsv_to_rgb(self.hue, self.sat, self.val));
             }
             Some(DragKind::Hue) => {
-                let r = hue_rect();
-                self.hue = ((y - r.y) / r.h).clamp(0.0, 1.0) as f32 * 360.0;
-                let color = hsv_to_rgb(self.hue, self.sat, self.val);
-                self.set_color_of(self.selected, color);
+                let rect = layout.hue;
+                self.hue = ((y - rect.y) / rect.h).clamp(0.0, 1.0) as f32 * 360.0;
+                self.set_selected_color(hsv_to_rgb(self.hue, self.sat, self.val));
+            }
+            Some(DragKind::Stop { index }) => {
+                let percent = percent_from_bar_x(layout.spectrum_bar, x);
+                let distance = (y - layout.spectrum_bar.bottom()).abs();
+                self.remove_armed = distance >= STOP_REMOVE_DISTANCE
+                    && self.draft.stops.len() > BatterySpectrum::MIN_STOPS;
+                if !self.remove_armed {
+                    if let Ok(new_index) = self.draft.set_stop_percent(index, percent) {
+                        self.selected = new_index;
+                        self.drag = Some(DragKind::Stop { index: new_index });
+                        self.pending_commit = true;
+                    }
+                }
             }
             None => {}
         }
     }
 
-    fn to_logical(&self, pos: PhysicalPosition<f64>) -> (f64, f64) {
+    fn to_logical(&self, position: PhysicalPosition<f64>) -> (f64, f64) {
         let scale = self.window.scale_factor();
-        (pos.x / scale, pos.y / scale)
+        (position.x / scale, position.y / scale)
     }
 
     fn paint(&mut self) -> Result<(), String> {
         let size = self.window.inner_size();
         let width = NonZeroU32::new(size.width.max(1)).unwrap();
         let height = NonZeroU32::new(size.height.max(1)).unwrap();
+        let dragging_stop = match self.drag {
+            Some(DragKind::Stop { index }) => Some(index),
+            _ => None,
+        };
+        let state = PaintState {
+            settings: self.settings,
+            draft: self.draft.clone(),
+            selected: self.selected,
+            hue: self.hue,
+            sat: self.sat,
+            val: self.val,
+            cursor: self.cursor,
+            remove_armed: self.remove_armed,
+            dragging_stop,
+            expanded_section: self.expanded_section,
+            accordion_anim: self.accordion_anim,
+        };
+        let layout = self.layout()?;
         self.surface
             .resize(width, height)
             .map_err(|e| format!("resize: {e}"))?;
-
-        let draft = self.draft;
-        let selected = self.selected;
-        let hue = self.hue;
-        let sat = self.sat;
-        let val = self.val;
-        let cursor = self.cursor;
-        let dirty = self.dirty;
-        let scale = self.window.scale_factor();
-        let stop_colors = [
-            (Stop::Full, draft.full),
-            (Stop::Mid, draft.mid),
-            (Stop::Empty, draft.empty),
-        ];
-
         let mut buffer = self
             .surface
             .buffer_mut()
             .map_err(|e| format!("buffer: {e}"))?;
+        let mut fb = Framebuffer::new(
+            &mut buffer,
+            width.get() as usize,
+            height.get() as usize,
+            self.window.scale_factor(),
+            &self.font,
+        );
+        fb.clear(ui::BG);
+        Self::paint_titlebar(&state, &layout, &mut fb);
+        for section in &layout.sections {
+            paint_section_header(&mut fb, section, &state);
+            if state.section_amount(section.section) <= 0.0 {
+                continue;
+            }
+            match section.section {
+                AccordionSection::System => Self::paint_system(&state, &layout, &mut fb),
+                AccordionSection::Notifications => {
+                    Self::paint_notifications(&state, &layout, &mut fb)
+                }
+                AccordionSection::ToastPosition => paint_position_diagram(&mut fb, &layout, &state),
+                AccordionSection::LightbarColors => Self::paint_editor(&state, &layout, &mut fb),
+                #[cfg(feature = "dev-emulate")]
+                AccordionSection::Developer => Self::paint_developer(&state, &layout, &mut fb),
+            }
+            cover_section_overflow(&mut fb, section);
+        }
+        if state.is_animating() {
+            self.window.request_redraw();
+        }
+        buffer.present().map_err(|e| format!("present: {e}"))
+    }
 
+    fn paint_titlebar(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        let accent = state.accent();
+        fb.fill_rect(0.0, 0.0, WIN_W, layout::WINDOW_HEADER_HEIGHT, ui::PANEL);
+        fb.fill_rect(
+            0.0,
+            0.0,
+            layout::SPACE_1,
+            layout::WINDOW_HEADER_HEIGHT,
+            ui::rgb_of(accent),
+        );
+        fb.icon(
+            layout.title_icon.x,
+            layout.title_icon.y,
+            layout.title_icon.w.min(layout.title_icon.h),
+            accent,
+        );
+        fb.text_in_rect(
+            layout.title_label,
+            DISPLAY_NAME,
+            ui::INK,
+            layout::WINDOW_HEADER_TITLE_SIZE,
+            ui::HorizontalAlign::Left,
+            ui::VerticalAlign::Center,
+        );
+        let cursor = state.cursor;
+        paint_title_button(
+            fb,
+            layout.minimize,
+            "—",
+            cursor.is_some_and(|(x, y)| layout.minimize.contains(x, y)),
+            false,
+        );
+        paint_title_button(
+            fb,
+            layout.close,
+            "×",
+            cursor.is_some_and(|(x, y)| layout.close.contains(x, y)),
+            true,
+        );
+    }
+
+    fn paint_system(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        #[cfg(windows)]
         {
-            let w = width.get() as usize;
-            let h = height.get() as usize;
-            let mut fb = Framebuffer {
-                buf: &mut buffer,
-                w,
-                h,
-                scale,
-                font: &self.font,
-            };
-            fb.clear(BG);
-
-            let preview = preview_rect();
-            let picker = picker_rect();
-
-            fb.text(PAD, 14.0, "Lightbar colors", INK, FONT_TITLE);
-            fb.text(
-                PAD,
-                36.0,
-                "Blend three colors across battery level",
-                MUTED,
+            let row = layout.autostart_row;
+            let switch = layout.autostart_switch;
+            fb.text_in_rect(
+                layout.autostart_label,
+                "Start with Windows",
+                ui::INK,
                 FONT_BODY,
+                ui::HorizontalAlign::Left,
+                ui::VerticalAlign::Center,
             );
-
-            fb.round_rect(
-                preview.x,
-                preview.y,
-                preview.w,
-                preview.h,
-                PANEL,
-                Some(LINE),
+            paint_switch(
+                fb,
+                switch,
+                state.settings.autostart,
+                state.cursor.is_some_and(|(x, y)| row.contains(x, y)),
+                state.accent(),
             );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = state;
             fb.text(
-                preview.x + 12.0,
-                preview.y + 10.0,
-                "Preview",
-                MUTED,
+                layout.autostart_row.x + 12.0,
+                layout.autostart_row.y + 14.0,
+                "Managed by your operating system",
+                ui::MUTED,
                 FONT_SMALL,
             );
-            draw_spectrum_bar(
-                &mut fb,
-                preview.x + 12.0,
-                preview.y + 30.0,
-                preview.w - 24.0,
-                26.0,
-                draft,
-            );
+        }
+    }
 
-            for (stop, color) in stop_colors {
-                let is_selected = stop == selected;
-                let rect = stop_card_rect(stop);
-                fb.round_rect(
-                    rect.x,
-                    rect.y,
-                    rect.w,
-                    rect.h,
-                    PANEL,
-                    Some(if is_selected { ACCENT } else { LINE }),
-                );
-                let sw = stop_swatch_rect(stop);
-                fb.round_rect(sw.x, sw.y, sw.w, sw.h, rgb_of(color), Some(LINE));
-                fb.text(rect.x + 8.0, rect.y + 52.0, stop.label(), INK, FONT_BODY);
-                fb.text(rect.x + 8.0, rect.y + 68.0, stop.hint(), MUTED, FONT_SMALL);
-                fb.text(
-                    rect.x + 8.0,
-                    rect.y + 84.0,
-                    &color.to_hex(),
-                    MUTED,
-                    FONT_SMALL,
-                );
-            }
-
-            fb.round_rect(picker.x, picker.y, picker.w, picker.h, PANEL, Some(LINE));
-            fb.text(
-                picker.x + 12.0,
-                picker.y + 10.0,
-                &format!("Editing {} ({})", selected.label(), selected.hint()),
-                INK,
+    fn paint_notifications(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        for setting in [
+            NotificationSetting::Connect,
+            NotificationSetting::Disconnect,
+            NotificationSetting::Low,
+            NotificationSetting::Charged,
+        ] {
+            let row = layout.notification_row(setting);
+            let label = match setting {
+                NotificationSetting::Connect => "Controller connected",
+                NotificationSetting::Disconnect => "Controller disconnected",
+                NotificationSetting::Low => "Low battery",
+                NotificationSetting::Charged => "Fully charged",
+            };
+            let index = notification_index(setting);
+            let switch = layout.notification_switches[index];
+            fb.text_in_rect(
+                layout.notification_labels[index],
+                label,
+                ui::INK,
                 FONT_BODY,
+                ui::HorizontalAlign::Left,
+                ui::VerticalAlign::Center,
             );
+            paint_switch(
+                fb,
+                switch,
+                state.notification_enabled(setting),
+                state.cursor.is_some_and(|(x, y)| row.contains(x, y)),
+                state.accent(),
+            );
+        }
+    }
 
-            draw_sv_square(&mut fb, sv_rect(), hue, sat, val);
-            draw_hue_strip(&mut fb, hue_rect(), hue);
+    fn paint_editor(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        let preview = layout.preview;
+        fb.round_rect(
+            (preview.x, preview.y, preview.w, preview.h),
+            layout::RADIUS_CARD,
+            ui::PANEL,
+            Some(ui::rgb_of(state.accent())),
+        );
+        draw_spectrum_bar(fb, layout.spectrum_bar, &state.draft);
 
-            let reset_hot = cursor.is_some_and(|(x, y)| hit(button_rect(ButtonId::Reset), x, y));
-            let apply_hot = cursor.is_some_and(|(x, y)| hit(button_rect(ButtonId::Apply), x, y));
-            draw_button(
-                &mut fb,
-                button_rect(ButtonId::Reset),
-                "Reset defaults",
-                reset_hot,
+        for (index, stop) in state.draft.stops.iter().enumerate() {
+            let handle = stop_handle_layout(layout.spectrum_bar, stop.percent);
+            let selected = index == state.selected;
+            let removing = state.remove_armed && state.dragging_stop == Some(index);
+            let hot = state
+                .cursor
+                .is_some_and(|(x, y)| handle.bounds.contains(x, y));
+            let border = if removing {
+                ui::rgb(196, 43, 54)
+            } else if selected {
+                ui::INK
+            } else if hot {
+                ui::MUTED
+            } else {
+                ui::LINE
+            };
+            fb.line(
+                (handle.tip.0, handle.tip.1),
+                (handle.tip.0, handle.swatch.y),
+                1.0,
+                border,
+            );
+            fb.round_rect(
+                (
+                    handle.swatch.x - 2.0,
+                    handle.swatch.y - 2.0,
+                    handle.swatch.w + 4.0,
+                    handle.swatch.h + 4.0,
+                ),
+                4.0,
+                if removing {
+                    ui::rgb(80, 28, 32)
+                } else {
+                    ui::PANEL
+                },
+                Some(border),
+            );
+            fb.round_rect(
+                (
+                    handle.swatch.x,
+                    handle.swatch.y,
+                    handle.swatch.w,
+                    handle.swatch.h,
+                ),
+                3.0,
+                ui::rgb_of(stop.color),
+                None,
+            );
+        }
+
+        let picker = layout.picker;
+        card(fb, picker);
+        let label = state
+            .selected_stop()
+            .map(|stop| format!("{}% · {}", stop.percent, stop.color.to_hex()))
+            .unwrap_or_else(|| "Select a stop".to_string());
+        fb.text_in_rect(
+            layout.picker_label,
+            &label,
+            ui::INK,
+            FONT_BODY,
+            ui::HorizontalAlign::Left,
+            ui::VerticalAlign::Center,
+        );
+        draw_sv_square(fb, layout.sv, state.hue, state.sat, state.val);
+        draw_hue_strip(fb, layout.hue, state.hue);
+
+        paint_button(
+            fb,
+            layout.reset,
+            "Reset defaults",
+            state
+                .cursor
+                .is_some_and(|(x, y)| layout.reset.contains(x, y)),
+            false,
+            true,
+            state.accent(),
+        );
+    }
+
+    #[cfg(feature = "dev-emulate")]
+    fn paint_developer(state: &PaintState, layout: &ConfigureLayout, fb: &mut Framebuffer<'_>) {
+        for (index, preset) in Preset::ALL.iter().copied().enumerate() {
+            let rect = layout.developer_buttons[index];
+            let label = preset
+                .menu_label()
+                .strip_prefix("Emulate: ")
+                .unwrap_or(preset.menu_label());
+            paint_button(
+                fb,
+                rect,
+                label,
+                state.cursor.is_some_and(|(x, y)| rect.contains(x, y)),
                 false,
                 true,
-            );
-            draw_button(
-                &mut fb,
-                button_rect(ButtonId::Apply),
-                "Apply",
-                apply_hot,
-                true,
-                dirty,
+                state.accent(),
             );
         }
-
-        buffer.present().map_err(|e| format!("present: {e}"))?;
-        Ok(())
     }
 }
 
-impl Drop for ConfigureWindow {
-    fn drop(&mut self) {
-        self.menu_bar.detach(&self.window);
+fn positions() -> [ToastPosition; 4] {
+    [
+        ToastPosition::TopLeft,
+        ToastPosition::TopRight,
+        ToastPosition::BottomLeft,
+        ToastPosition::BottomRight,
+    ]
+}
+
+fn card(fb: &mut Framebuffer<'_>, rect: Rect) {
+    fb.round_rect(
+        (rect.x, rect.y, rect.w, rect.h),
+        layout::RADIUS_CARD,
+        ui::PANEL,
+        Some(ui::LINE),
+    );
+}
+
+fn section_heading(fb: &mut Framebuffer<'_>, rect: Rect, title: &str) {
+    let label = Rect::new(
+        rect.x + HEADER_TITLE_PAD_X,
+        rect.y,
+        (rect.w - HEADER_TITLE_PAD_X * 2.0 - 14.0).max(0.0),
+        rect.h,
+    );
+    fb.text_in_rect(
+        label,
+        title,
+        ui::INK,
+        FONT_HEADING,
+        ui::HorizontalAlign::Left,
+        ui::VerticalAlign::Center,
+    );
+}
+
+fn paint_section_header(fb: &mut Framebuffer<'_>, section: &SectionLayout, state: &PaintState) {
+    let hot = state
+        .cursor
+        .is_some_and(|(x, y)| section.header.contains(x, y));
+    let active = section.section == state.expanded_section;
+    if hot || active {
+        fb.fill_rect(
+            section.header.x,
+            section.header.y,
+            section.header.w,
+            section.header.h,
+            if active { ui::PANEL } else { ui::PANEL_HOVER },
+        );
+    }
+    section_heading(fb, section.header, section.section.title());
+    paint_accordion_affordance(fb, section.header, state.section_amount(section.section));
+    fb.fill_rect(
+        section.header.x,
+        section.header.bottom(),
+        section.header.w,
+        1.0,
+        ui::LINE,
+    );
+}
+
+fn cover_section_overflow(fb: &mut Framebuffer<'_>, section: &SectionLayout) {
+    if section.visible_height + 0.5 >= section.full_height {
+        return;
+    }
+    let hidden_y = section.content.y + section.visible_height;
+    fb.fill_rect(
+        section.content.x,
+        hidden_y,
+        section.content.w,
+        (section.full_height - section.visible_height).max(0.0),
+        ui::BG,
+    );
+}
+
+fn paint_accordion_affordance(fb: &mut Framebuffer<'_>, header: Rect, amount: f64) {
+    let rect = Rect::new(
+        header.right() - HEADER_TITLE_PAD_X - 14.0,
+        header.y + (header.h - 14.0) / 2.0,
+        14.0,
+        14.0,
+    );
+    let color = ui::MUTED;
+    fb.fill_rect(rect.x + 2.0, rect.y + 6.0, 10.0, 2.0, color);
+    let vertical_h = ((1.0 - amount) * 10.0).round();
+    if vertical_h > 0.0 {
+        let top = rect.y + (14.0 - vertical_h) / 2.0;
+        fb.fill_rect(rect.x + 6.0, top, 2.0, vertical_h, color);
     }
 }
 
-#[derive(Clone, Copy)]
-struct Rect {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-}
-
-fn hit(r: Rect, x: f64, y: f64) -> bool {
-    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
-}
-
-fn preview_rect() -> Rect {
-    Rect {
-        x: PAD,
-        y: 58.0,
-        w: CONTENT_W,
-        h: PREVIEW_H,
+fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, state: &PaintState) {
+    let stage = layout.position_stage;
+    fb.round_rect(
+        (stage.x, stage.y, stage.w, stage.h),
+        layout::RADIUS_CARD,
+        POSITION_STAGE_DARK,
+        Some(ui::LINE),
+    );
+    for position in positions() {
+        let hit = layout.position_choice(position);
+        let hot = state.cursor.is_some_and(|(x, y)| hit.contains(x, y));
+        let selected = position == state.settings.toast_position;
+        let radius = (hit.h / 2.0).min(4.0);
+        fb.round_rect(
+            (hit.x, hit.y, hit.w, hit.h),
+            radius,
+            if selected {
+                ui::rgb_of(state.accent())
+            } else if hot {
+                ui::PANEL_HOVER
+            } else {
+                ui::PANEL
+            },
+            Some(if selected { ui::INK } else { ui::LINE }),
+        );
+        if selected || hot {
+            let rail_w = (hit.h * 0.35).clamp(2.0, 4.0);
+            fb.round_rect(
+                (hit.x, hit.y, rail_w, hit.h),
+                radius.min(rail_w / 2.0),
+                if selected { ui::INK } else { ui::MUTED },
+                None,
+            );
+        }
     }
 }
 
-fn stop_card_rect(stop: Stop) -> Rect {
-    let i = match stop {
-        Stop::Full => 0,
-        Stop::Mid => 1,
-        Stop::Empty => 2,
+fn paint_title_button(fb: &mut Framebuffer<'_>, rect: Rect, label: &str, hot: bool, danger: bool) {
+    if hot {
+        fb.fill_rect(
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            if danger {
+                ui::rgb(196, 43, 54)
+            } else {
+                ui::PANEL_HOVER
+            },
+        );
+    }
+    fb.text_in_rect(
+        rect,
+        label,
+        ui::INK,
+        18.0,
+        ui::HorizontalAlign::Center,
+        ui::VerticalAlign::Center,
+    );
+}
+
+fn paint_switch(fb: &mut Framebuffer<'_>, rect: Rect, enabled: bool, hot: bool, accent: Rgb) {
+    let track = if enabled {
+        ui::rgb_of(accent)
+    } else if hot {
+        ui::DIM
+    } else {
+        ui::LINE
     };
-    let card_w = (CONTENT_W - GAP * 2.0) / 3.0;
-    Rect {
-        x: PAD + i as f64 * (card_w + GAP),
-        y: preview_rect().y + preview_rect().h + GAP,
-        w: card_w,
-        h: STOP_H,
-    }
+    fb.round_rect((rect.x, rect.y, rect.w, rect.h), 10.0, track, None);
+    let knob_x = if enabled {
+        rect.x + rect.w - 18.0
+    } else {
+        rect.x + 2.0
+    };
+    fb.round_rect((knob_x, rect.y + 2.0, 16.0, 16.0), 8.0, ui::INK, None);
 }
 
-fn stop_swatch_rect(stop: Stop) -> Rect {
-    let c = stop_card_rect(stop);
-    Rect {
-        x: c.x + 8.0,
-        y: c.y + 10.0,
-        w: 36.0,
-        h: 36.0,
-    }
-}
-
-fn stop_label_rect(stop: Stop) -> Rect {
-    stop_card_rect(stop)
-}
-
-fn picker_rect() -> Rect {
-    let stops_bottom = stop_card_rect(Stop::Full).y + STOP_H;
-    Rect {
-        x: PAD,
-        y: stops_bottom + GAP,
-        w: CONTENT_W,
-        h: PICKER_H,
-    }
-}
-
-fn sv_rect() -> Rect {
-    let p = picker_rect();
-    Rect {
-        x: p.x + 12.0,
-        y: p.y + 12.0 + PICKER_HEADER,
-        w: SV_W,
-        h: SV_H,
-    }
-}
-
-fn hue_rect() -> Rect {
-    let sv = sv_rect();
-    Rect {
-        x: sv.x + sv.w + GAP,
-        y: sv.y,
-        w: HUE_W,
-        h: sv.h,
-    }
-}
-
-fn button_rect(id: ButtonId) -> Rect {
-    let y = picker_rect().y + picker_rect().h + GAP;
-    match id {
-        ButtonId::Reset => Rect {
-            x: PAD,
-            y,
-            w: 120.0,
-            h: BTN_H,
-        },
-        ButtonId::Apply => Rect {
-            x: PAD + CONTENT_W - 88.0,
-            y,
-            w: 88.0,
-            h: BTN_H,
-        },
-    }
-}
-
-const fn rgb_u32(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-fn rgb_of(c: Rgb) -> u32 {
-    rgb_u32(c.r, c.g, c.b)
-}
-
-struct Framebuffer<'a> {
-    buf: &'a mut [u32],
-    w: usize,
-    h: usize,
-    scale: f64,
-    font: &'a Font,
-}
-
-impl Framebuffer<'_> {
-    fn clear(&mut self, color: u32) {
-        self.buf.fill(color);
-    }
-
-    fn put_phys(&mut self, x: i32, y: i32, color: u32) {
-        if x < 0 || y < 0 {
-            return;
-        }
-        let x = x as usize;
-        let y = y as usize;
-        if x < self.w && y < self.h {
-            self.buf[y * self.w + x] = color;
-        }
-    }
-
-    fn fill_rect_phys(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-        let x0 = x0.max(0);
-        let y0 = y0.max(0);
-        let x1 = x1.min(self.w as i32);
-        let y1 = y1.min(self.h as i32);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.put_phys(x, y, color);
-            }
-        }
-    }
-
-    fn to_phys(&self, v: f64) -> i32 {
-        (v * self.scale).round() as i32
-    }
-
-    fn round_rect(&mut self, x: f64, y: f64, w: f64, h: f64, fill: u32, border: Option<u32>) {
-        let x0 = self.to_phys(x);
-        let y0 = self.to_phys(y);
-        let x1 = self.to_phys(x + w);
-        let y1 = self.to_phys(y + h);
-        let radius = self.to_phys(8.0).max(2);
-        for py in y0..y1 {
-            for px in x0..x1 {
-                if inside_rounded(px, py, x0, y0, x1, y1, radius) {
-                    self.put_phys(px, py, fill);
-                }
-            }
-        }
-        if let Some(border) = border {
-            let t = self.to_phys(1.5).max(1);
-            for py in y0..y1 {
-                for px in x0..x1 {
-                    if inside_rounded(px, py, x0, y0, x1, y1, radius)
-                        && !inside_rounded(
-                            px,
-                            py,
-                            x0 + t,
-                            y0 + t,
-                            x1 - t,
-                            y1 - t,
-                            (radius - t).max(0),
-                        )
-                    {
-                        self.put_phys(px, py, border);
-                    }
-                }
-            }
-        }
-    }
-
-    fn text_width(&self, text: &str, size_logical: f32) -> f64 {
-        let px = (size_logical as f64 * self.scale) as f32;
-        text.chars()
-            .map(|ch| self.font.metrics(ch, px).advance_width as f64)
-            .sum::<f64>()
-            / self.scale
-    }
-
-    /// Draw text with `y` as the top of the line in logical pixels.
-    fn text(&mut self, x: f64, y: f64, text: &str, color: u32, size_logical: f32) {
-        let px = (size_logical as f64 * self.scale) as f32;
-        let ascent = self
-            .font
-            .horizontal_line_metrics(px)
-            .map(|m| m.ascent)
-            .unwrap_or(px * 0.8);
-        let baseline = self.to_phys(y) as f32 + ascent;
-        let mut pen_x = self.to_phys(x) as f32;
-
-        for ch in text.chars() {
-            let (metrics, bitmap) = self.font.rasterize(ch, px);
-            if metrics.width > 0 && metrics.height > 0 {
-                let glyph_x = (pen_x + metrics.xmin as f32).round() as i32;
-                let glyph_y =
-                    (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i32;
-                for row in 0..metrics.height {
-                    for col in 0..metrics.width {
-                        let cover = bitmap[row * metrics.width + col];
-                        if cover == 0 {
-                            continue;
-                        }
-                        let dx = glyph_x + col as i32;
-                        let dy = glyph_y + row as i32;
-                        self.blend_phys(dx, dy, color, cover);
-                    }
-                }
-            }
-            pen_x += metrics.advance_width;
-        }
-    }
-
-    fn blend_phys(&mut self, x: i32, y: i32, color: u32, cover: u8) {
-        if x < 0 || y < 0 {
-            return;
-        }
-        let x = x as usize;
-        let y = y as usize;
-        if x >= self.w || y >= self.h {
-            return;
-        }
-        let i = y * self.w + x;
-        let dst = self.buf[i];
-        if cover == 255 {
-            self.buf[i] = color;
-            return;
-        }
-        let a = cover as u32;
-        let inv = 255 - a;
-        let sr = (color >> 16) & 0xff;
-        let sg = (color >> 8) & 0xff;
-        let sb = color & 0xff;
-        let dr = (dst >> 16) & 0xff;
-        let dg = (dst >> 8) & 0xff;
-        let db = dst & 0xff;
-        let r = (sr * a + dr * inv) / 255;
-        let g = (sg * a + dg * inv) / 255;
-        let b = (sb * a + db * inv) / 255;
-        self.buf[i] = (r << 16) | (g << 8) | b;
-    }
-}
-
-fn inside_rounded(px: i32, py: i32, x0: i32, y0: i32, x1: i32, y1: i32, r: i32) -> bool {
-    if px < x0 || py < y0 || px >= x1 || py >= y1 {
-        return false;
-    }
-    if r <= 0 {
-        return true;
-    }
-    let r2 = r * r;
-    let corners = [
-        (x0 + r, y0 + r, px < x0 + r && py < y0 + r),
-        (x1 - r - 1, y0 + r, px >= x1 - r && py < y0 + r),
-        (x0 + r, y1 - r - 1, px < x0 + r && py >= y1 - r),
-        (x1 - r - 1, y1 - r - 1, px >= x1 - r && py >= y1 - r),
-    ];
-    for (cx, cy, in_corner) in corners {
-        if in_corner {
-            let dx = px - cx;
-            let dy = py - cy;
-            return dx * dx + dy * dy <= r2;
-        }
-    }
-    true
-}
-
-fn draw_spectrum_bar(
+fn paint_button(
     fb: &mut Framebuffer<'_>,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    spectrum: BatterySpectrum,
-) {
-    let x0 = fb.to_phys(x);
-    let y0 = fb.to_phys(y);
-    let x1 = fb.to_phys(x + w);
-    let y1 = fb.to_phys(y + h);
-    let span = (x1 - x0).max(1);
-    for px in x0..x1 {
-        let t = (px - x0) as f32 / span as f32;
-        let percent = (100.0 - t * 100.0).round() as u8;
-        let c = spectrum.color_at_percent(percent);
-        fb.fill_rect_phys(px, y0, px + 1, y1, rgb_of(c));
-    }
-    let border = LINE;
-    for px in x0..x1 {
-        fb.put_phys(px, y0, border);
-        fb.put_phys(px, y1 - 1, border);
-    }
-    for py in y0..y1 {
-        fb.put_phys(x0, py, border);
-        fb.put_phys(x1 - 1, py, border);
-    }
-}
-
-fn draw_sv_square(fb: &mut Framebuffer<'_>, r: Rect, hue: f32, sat: f32, val: f32) {
-    let x0 = fb.to_phys(r.x);
-    let y0 = fb.to_phys(r.y);
-    let x1 = fb.to_phys(r.x + r.w);
-    let y1 = fb.to_phys(r.y + r.h);
-    let ww = (x1 - x0).max(1) as f32;
-    let hh = (y1 - y0).max(1) as f32;
-    for py in y0..y1 {
-        for px in x0..x1 {
-            let s = (px - x0) as f32 / ww;
-            let v = 1.0 - (py - y0) as f32 / hh;
-            fb.put_phys(px, py, rgb_of(hsv_to_rgb(hue, s, v)));
-        }
-    }
-    let cx = x0 + (sat * ww).round() as i32;
-    let cy = y0 + ((1.0 - val) * hh).round() as i32;
-    for d in -4..=4 {
-        fb.put_phys(cx + d, cy, rgb_u32(255, 255, 255));
-        fb.put_phys(cx, cy + d, rgb_u32(255, 255, 255));
-        if d.abs() <= 3 {
-            fb.put_phys(cx + d, cy, rgb_u32(0, 0, 0));
-            fb.put_phys(cx, cy + d, rgb_u32(0, 0, 0));
-        }
-    }
-}
-
-fn draw_hue_strip(fb: &mut Framebuffer<'_>, r: Rect, hue: f32) {
-    let x0 = fb.to_phys(r.x);
-    let y0 = fb.to_phys(r.y);
-    let x1 = fb.to_phys(r.x + r.w);
-    let y1 = fb.to_phys(r.y + r.h);
-    let hh = (y1 - y0).max(1) as f32;
-    for py in y0..y1 {
-        let h = (py - y0) as f32 / hh * 360.0;
-        let c = rgb_of(hsv_to_rgb(h, 1.0, 1.0));
-        fb.fill_rect_phys(x0, py, x1, py + 1, c);
-    }
-    let cy = y0 + ((hue / 360.0) * hh).round() as i32;
-    fb.fill_rect_phys(x0 - 2, cy - 1, x1 + 2, cy + 2, rgb_u32(255, 255, 255));
-    fb.fill_rect_phys(x0, cy, x1, cy + 1, rgb_u32(0, 0, 0));
-}
-
-fn draw_button(
-    fb: &mut Framebuffer<'_>,
-    r: Rect,
+    rect: Rect,
     label: &str,
     hot: bool,
     primary: bool,
     enabled: bool,
+    accent: Rgb,
 ) {
-    let (bg, ink, border) = if !enabled {
-        (BTN_BG, MUTED, LINE)
+    let (fill, ink, border) = if !enabled {
+        (ui::PANEL, ui::DIM, ui::LINE)
     } else if primary {
-        if hot {
-            (BTN_BG_HOT, BTN_INK_HOT, ACCENT)
-        } else {
-            (ACCENT, BTN_INK_HOT, ACCENT)
-        }
-    } else if hot {
-        (rgb_u32(220, 226, 235), INK, LINE)
+        (
+            ui::rgb_of(if hot {
+                accent.lerp(Rgb::WHITE, 0.12)
+            } else {
+                accent
+            }),
+            ui::INK,
+            ui::rgb_of(accent),
+        )
     } else {
-        (BTN_BG, INK, LINE)
+        (
+            if hot { ui::PANEL_HOVER } else { ui::PANEL },
+            ui::INK,
+            ui::LINE,
+        )
     };
-    fb.round_rect(r.x, r.y, r.w, r.h, bg, Some(border));
-    let text_w = fb.text_width(label, FONT_BODY);
-    let tx = r.x + (r.w - text_w) * 0.5;
-    let ty = r.y + (r.h - FONT_BODY as f64) * 0.5;
-    fb.text(tx, ty, label, ink, FONT_BODY);
+    fb.round_rect(
+        (rect.x, rect.y, rect.w, rect.h),
+        layout::RADIUS_CONTROL,
+        fill,
+        Some(border),
+    );
+    fb.text_in_rect(
+        rect,
+        label,
+        ink,
+        FONT_BODY,
+        ui::HorizontalAlign::Center,
+        ui::VerticalAlign::Center,
+    );
+}
+
+fn draw_spectrum_bar(fb: &mut Framebuffer<'_>, rect: Rect, spectrum: &BatterySpectrum) {
+    let x0 = fb.to_phys(rect.x);
+    let y0 = fb.to_phys(rect.y);
+    let x1 = fb.to_phys(rect.x + rect.w);
+    let y1 = fb.to_phys(rect.y + rect.h);
+    let span = (x1 - x0).max(1);
+    for x in x0..x1 {
+        let percent = (100.0 - (x - x0) as f32 / span as f32 * 100.0).round() as u8;
+        fb.fill_rect_phys(
+            x,
+            y0,
+            x + 1,
+            y1,
+            ui::rgb_of(spectrum.color_at_percent(percent)),
+        );
+    }
+}
+
+fn draw_sv_square(fb: &mut Framebuffer<'_>, rect: Rect, hue: f32, sat: f32, val: f32) {
+    let x0 = fb.to_phys(rect.x);
+    let y0 = fb.to_phys(rect.y);
+    let x1 = fb.to_phys(rect.x + rect.w);
+    let y1 = fb.to_phys(rect.y + rect.h);
+    let width = (x1 - x0).max(1) as f32;
+    let height = (y1 - y0).max(1) as f32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let saturation = (x - x0) as f32 / width;
+            let value = 1.0 - (y - y0) as f32 / height;
+            fb.put_phys(x, y, ui::rgb_of(hsv_to_rgb(hue, saturation, value)));
+        }
+    }
+    let cx = x0 + (sat * width).round() as i32;
+    let cy = y0 + ((1.0 - val) * height).round() as i32;
+    for delta in -5..=5 {
+        fb.put_phys(cx + delta, cy, ui::INK);
+        fb.put_phys(cx, cy + delta, ui::INK);
+    }
+    for delta in -3..=3 {
+        fb.put_phys(cx + delta, cy, ui::BG);
+        fb.put_phys(cx, cy + delta, ui::BG);
+    }
+}
+
+fn draw_hue_strip(fb: &mut Framebuffer<'_>, rect: Rect, hue: f32) {
+    let x0 = fb.to_phys(rect.x);
+    let y0 = fb.to_phys(rect.y);
+    let x1 = fb.to_phys(rect.x + rect.w);
+    let y1 = fb.to_phys(rect.y + rect.h);
+    let height = (y1 - y0).max(1) as f32;
+    for y in y0..y1 {
+        let color = hsv_to_rgb((y - y0) as f32 / height * 360.0, 1.0, 1.0);
+        fb.fill_rect_phys(x0, y, x1, y + 1, ui::rgb_of(color));
+    }
+    let cy = y0 + (hue / 360.0 * height).round() as i32;
+    fb.fill_rect_phys(x0 - 2, cy - 2, x1 + 2, cy + 2, ui::INK);
+    fb.fill_rect_phys(x0, cy - 1, x1, cy + 1, ui::BG);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn position_choices_map_to_distinct_hit_regions() {
+        let state = PaintState {
+            settings: ConfigureSettings {
+                notify_low: true,
+                notify_charged: true,
+                notify_connect: true,
+                notify_disconnect: true,
+                toast_position: ToastPosition::TopRight,
+                #[cfg(windows)]
+                autostart: false,
+                show_developer: false,
+            },
+            draft: BatterySpectrum::default_spectrum(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section: AccordionSection::ToastPosition,
+            accordion_anim: None,
+        };
+        let layout = ConfigureLayout::compute(&state, false);
+        let stage = layout.position_stage;
+        assert!((stage.w / stage.h - 16.0 / 9.0).abs() < 1e-6);
+        assert!(stage.x >= layout.section(AccordionSection::ToastPosition).content.x);
+        for position in positions() {
+            let rect = layout.position_choice(position);
+            assert!((rect.w / rect.h - TOAST_ASPECT).abs() < 1e-6);
+            assert!(stage.contains(rect.x + 0.5, rect.y + 0.5));
+            assert!(stage.contains(rect.right() - 0.5, rect.bottom() - 0.5));
+            let center = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            assert!(rect.contains(center.0, center.1));
+            assert_eq!(
+                positions()
+                    .into_iter()
+                    .filter(|candidate| {
+                        layout
+                            .position_choice(*candidate)
+                            .contains(center.0, center.1)
+                    })
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn section_content_shares_horizontal_padding() {
+        let layout = ConfigureLayout::compute(&preview_state(AccordionSection::System), false);
+        let content_left = CONTENT_PAD_X;
+        assert!((layout.autostart_row.x - content_left).abs() < 1e-6);
+        let notifications =
+            ConfigureLayout::compute(&preview_state(AccordionSection::Notifications), false);
+        assert!((notifications.notification_rows[0].x - content_left).abs() < 1e-6);
+        let toast =
+            ConfigureLayout::compute(&preview_state(AccordionSection::ToastPosition), false);
+        assert!((toast.position_stage.x - content_left).abs() < 1e-6);
+        let lightbar =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        assert!((lightbar.preview.x - content_left).abs() < 1e-6);
+    }
+
+    #[test]
+    fn title_controls_do_not_overlap_drag_region() {
+        let state = preview_state(AccordionSection::System);
+        let layout = ConfigureLayout::compute(&state, false);
+        assert!(layout.title_drag.right() <= layout.minimize.x);
+        assert!(layout.minimize.right() <= layout.close.x);
+        assert_eq!(layout.title_drag.h, layout::WINDOW_HEADER_HEIGHT);
+    }
+
+    #[test]
+    fn first_section_is_default_and_exactly_one_is_open() {
+        let state = preview_state(AccordionSection::System);
+        let layout = ConfigureLayout::compute(&state, false);
+        let expanded = layout
+            .sections
+            .iter()
+            .filter(|section| section.visible_height > 0.0)
+            .count();
+        assert_eq!(expanded, 1);
+        assert_eq!(layout.sections[0].section, AccordionSection::System);
+        assert!(layout.section(AccordionSection::System).visible_height > 0.0);
+    }
+
+    #[test]
+    fn window_height_matches_largest_panel() {
+        let system = ConfigureLayout::compute(&preview_state(AccordionSection::System), false);
+        let notifications =
+            ConfigureLayout::compute(&preview_state(AccordionSection::Notifications), false);
+        let position =
+            ConfigureLayout::compute(&preview_state(AccordionSection::ToastPosition), false);
+        let lightbar =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        assert_eq!(system.height, notifications.height);
+        assert_eq!(notifications.height, position.height);
+        assert_eq!(position.height, lightbar.height);
+    }
+
+    #[test]
+    fn stop_handles_track_percent_positions() {
+        let layout =
+            ConfigureLayout::compute(&preview_state(AccordionSection::LightbarColors), false);
+        let spectrum = BatterySpectrum::default_spectrum();
+        let handles = layout.stop_handles_for(&spectrum);
+        assert_eq!(handles.len(), 3);
+        assert!(handles[0].bounds.x < handles[1].bounds.x);
+        assert!(handles[1].bounds.x < handles[2].bounds.x);
+        for handle in &handles {
+            assert!(handle.bounds.bottom() <= layout.height + 1.0);
+        }
+    }
+
+    #[test]
+    fn accordion_animation_splits_heights_between_sections() {
+        let mut state = preview_state(AccordionSection::System);
+        state.accordion_anim = Some(AccordionAnimation {
+            from: AccordionSection::System,
+            to: AccordionSection::LightbarColors,
+            started_at: Instant::now() - Duration::from_millis(ACCORDION_ANIM_MS / 2),
+        });
+        state.expanded_section = AccordionSection::LightbarColors;
+        let layout = ConfigureLayout::compute(&state, false);
+        let system = layout.section(AccordionSection::System);
+        let lightbar = layout.section(AccordionSection::LightbarColors);
+        assert!(system.visible_height > 0.0);
+        assert!(lightbar.visible_height > 0.0);
+        assert!(system.visible_height < system.full_height);
+        assert!(lightbar.visible_height < lightbar.full_height);
+    }
+
+    #[cfg(feature = "dev-emulate")]
+    #[test]
+    fn developer_controls_are_present_and_bounded() {
+        let layout = ConfigureLayout::compute(&preview_state(AccordionSection::Developer), true);
+        assert!(
+            layout
+                .sections
+                .iter()
+                .any(|section| section.section == AccordionSection::Developer)
+        );
+        assert!(layout.developer_buttons.len() >= Preset::ALL.len());
+        assert!(
+            layout
+                .developer_buttons
+                .iter()
+                .all(|rect| rect.bottom() <= layout.height)
+        );
+    }
+
+    fn preview_state(section: AccordionSection) -> PaintState {
+        PaintState {
+            settings: ConfigureSettings {
+                notify_low: true,
+                notify_charged: true,
+                notify_connect: true,
+                notify_disconnect: true,
+                toast_position: ToastPosition::TopRight,
+                #[cfg(windows)]
+                autostart: false,
+                show_developer: false,
+            },
+            draft: BatterySpectrum::default_spectrum(),
+            selected: 0,
+            hue: 0.0,
+            sat: 0.0,
+            val: 0.0,
+            cursor: None,
+            remove_armed: false,
+            dragging_stop: None,
+            expanded_section: section,
+            accordion_anim: None,
+        }
+    }
 }

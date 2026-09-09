@@ -51,13 +51,6 @@ impl KnownController {
         }
         changed
     }
-
-    pub fn submenu_label_disconnected(&self) -> String {
-        format!(
-            "{} ({})  {}% — disconnected",
-            self.product, self.connection, self.percent
-        )
-    }
 }
 
 impl KnownControllers {
@@ -230,20 +223,6 @@ fn prefs_dir() -> PathBuf {
     PathBuf::from(PKG_NAME)
 }
 
-pub fn submenu_label_live(controller: &ControllerStatus) -> String {
-    if controller.is_low_battery() {
-        format!(
-            "LOW {}% — {} ({})",
-            controller.percent, controller.product, controller.connection
-        )
-    } else {
-        format!(
-            "{} ({})  {}%",
-            controller.product, controller.connection, controller.percent
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,19 +282,5 @@ mod tests {
         let disconnected = store.remembered_disconnected(&live);
         assert_eq!(disconnected.len(), 1);
         assert_eq!(disconnected[0].serial, "gone");
-    }
-
-    #[test]
-    fn disconnected_label_includes_percent() {
-        let record = KnownController {
-            serial: "abc".into(),
-            product: "DualSense".into(),
-            connection: "Bluetooth".into(),
-            percent: 75,
-        };
-        assert_eq!(
-            record.submenu_label_disconnected(),
-            "DualSense (Bluetooth)  75% — disconnected"
-        );
     }
 }

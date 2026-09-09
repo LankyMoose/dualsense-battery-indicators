@@ -8,12 +8,13 @@ System tray app that shows connected DualSense controller battery levels, colors
 
 - Tray icon with a DualSense silhouette
 - Tooltip shows how many controllers are connected
-- Menu lists each controller in a submenu with battery %, **Identify** (flash lightbar), and an opt-in **Remember** toggle
-- **Remember** a controller to keep it in the menu after disconnect with its last-known charge % (off by default)
-- Desktop notifications when a pad **connects** (with battery %), hits **low battery** (≤5% discharging), or **finishes charging** (Configure → Settings → **Notifications**; on by default)
-- **Start with Windows** autostart toggle in the Configure window’s **Settings** menu (Windows)
+- Left-click the tray icon for a dark controller popup with battery state, click-to-**Identify**, and an opt-in **Remember** checkbox; right-click for **Settings** and **Exit**
+- **Remember** a controller to keep it in the popup after disconnect with its last-known charge % (off by default)
+- Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (≤5% discharging), or **finishes charging** (tray → **Settings**; on by default)
+- Toasts slide vertically in from any configurable screen corner, stay above borderless-fullscreen games, and slide away on click, Escape, or automatically after five seconds
+- Dark custom Configure window for notification, toast-position, autostart, and lightbar settings
 - Detects controllers connecting/disconnecting within a few seconds
-- Lightbar color blends across a customizable **3-stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Configure**
+- Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** inside a single-open animated accordion. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
 - At **≤5% while discharging**, the lightbar periodically pulses **orange**
 - Single-instance (second launch exits quietly)
 - Logs to a file (see Troubleshooting)
@@ -48,7 +49,7 @@ For testing notifications without real hardware, build with the `dev-emulate` fe
 cargo run --features dev-emulate -- --dev
 ```
 
-That unlocks a **Developer** menu in the **Configure** window with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
+That unlocks a **Developer** section in the **Configure** window with emulated controller presets (low battery, charging, fully charged, etc.). Emulation is not compiled into normal release binaries.
 
 ### CLI
 
@@ -59,16 +60,18 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 | `--install-autostart` | Windows: add a Startup entry for this exe |
 | `--uninstall-autostart` | Windows: remove that Startup entry |
 | `--list-controllers` | Print connected DualSense pads and exit |
-| `--dev` | Enable Developer menu in Configure (only when built with `--features dev-emulate`) |
+| `--dev` | Enable Developer controls in Configure (only when built with `--features dev-emulate`) |
 
 ## Windows notes
 
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense silhouette icon (embedded at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
-- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles + lightbar spectrum)
+- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/position + lightbar spectrum)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json`
-- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable from **Configure → Settings**). Older `.cmd` entries are migrated automatically.
+- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
+- Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
+- The custom left-click controller popup is available on Windows and macOS. The `tray-icon` Linux backend does not emit tray click events; use the right-click **Settings** menu there.
 
 ## Platform support
 
@@ -83,12 +86,10 @@ That unlocks a **Developer** menu in the **Configure** window with emulated cont
 - GTK 3 development libraries (for tray)
 - `libhidapi` / pkg-config as required by the `hidapi` crate
 - Permission to open the DualSense HID device (udev rule or group membership)
-- A desktop notification daemon (e.g. the usual DE notification service) for toasts
 
 ### macOS
 
 - Grant Input Monitoring / accessibility only if macOS prompts for HID access
-- macOS may prompt once for notification permission
 - Autostart is not automated; use Login Items manually if desired
 
 ## Battery accuracy
@@ -114,11 +115,17 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.10
-git push origin v0.1.10
+git tag v0.1.11
+git push origin v0.1.11
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+
+## Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+Battery status, notification preferences, lightbar colors, and remembered controllers stay on the local machine (`prefs.json`, `controllers.json`, and `app.log` under the app data directory). Toasts are rendered locally by the app. There is no telemetry, account, or network API.
 
 ## License
 

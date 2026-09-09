@@ -6,15 +6,20 @@ mod autostart;
 mod battery;
 mod color;
 mod configure_ui;
+mod controller_popup;
 #[cfg(feature = "dev-emulate")]
 mod emulate;
 mod icon;
+#[allow(dead_code)]
+mod icon_draw;
 mod known;
 mod lightbar;
 mod notify;
 mod prefs;
 mod steam;
+mod toast;
 mod tray;
+mod ui;
 
 use app_meta::{DISPLAY_NAME, PKG_NAME, PKG_VERSION};
 use single_instance::SingleInstance;

@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastPosition {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default = "default_true")]
@@ -15,6 +25,10 @@ pub struct Prefs {
     pub notify_charged: bool,
     #[serde(default = "default_true")]
     pub notify_connect: bool,
+    #[serde(default = "default_true")]
+    pub notify_disconnect: bool,
+    #[serde(default)]
+    pub toast_position: ToastPosition,
     #[serde(default)]
     pub spectrum: BatterySpectrum,
 }
@@ -29,7 +43,9 @@ impl Default for Prefs {
             notify_low: true,
             notify_charged: true,
             notify_connect: true,
-            spectrum: BatterySpectrum::DEFAULT,
+            notify_disconnect: true,
+            toast_position: ToastPosition::default(),
+            spectrum: BatterySpectrum::default_spectrum(),
         }
     }
 }
@@ -104,4 +120,40 @@ fn prefs_path() -> PathBuf {
     }
 
     PathBuf::from(format!("{PKG_NAME}-prefs.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_prefs_default_to_top_right() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notify_low":true,"notify_charged":true,"notify_connect":true}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.toast_position, ToastPosition::TopRight);
+        assert!(prefs.notify_disconnect);
+    }
+
+    #[test]
+    fn legacy_spectrum_fields_migrate_on_load() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notify_low":true,"notify_charged":true,"notify_connect":true,"spectrum":{"full":{"r":1,"g":2,"b":3},"mid":{"r":4,"g":5,"b":6},"empty":{"r":7,"g":8,"b":9}}}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.spectrum.stops.len(), 3);
+        assert_eq!(prefs.spectrum.stops[0].percent, 100);
+        let encoded = serde_json::to_value(&prefs.spectrum).unwrap();
+        assert!(encoded.get("stops").is_some());
+        assert!(encoded.get("full").is_none());
+    }
+
+    #[test]
+    fn toast_position_uses_stable_snake_case_names() {
+        assert_eq!(
+            serde_json::to_string(&ToastPosition::BottomLeft).unwrap(),
+            r#""bottom_left""#
+        );
+    }
 }

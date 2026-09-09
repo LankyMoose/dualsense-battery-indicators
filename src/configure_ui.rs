@@ -22,7 +22,7 @@ use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
 const WIN_W: f64 = 760.0;
 const WIN_H: f64 = 560.0;
 const DEV_WIN_H: f64 = 670.0;
-const TITLE_H: f64 = 52.0;
+const TITLE_H: f64 = 40.0;
 const PAD: f64 = 16.0;
 const GAP: f64 = 16.0;
 const LEFT_W: f64 = 260.0;
@@ -36,6 +36,7 @@ const FONT_SMALL: f32 = 10.5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationSetting {
     Connect,
+    Disconnect,
     Low,
     Charged,
 }
@@ -57,6 +58,7 @@ pub struct ConfigureSettings {
     pub notify_low: bool,
     pub notify_charged: bool,
     pub notify_connect: bool,
+    pub notify_disconnect: bool,
     pub toast_position: ToastPosition,
     #[cfg(windows)]
     pub autostart: bool,
@@ -149,6 +151,7 @@ impl PaintState {
     fn notification_enabled(self, setting: NotificationSetting) -> bool {
         match setting {
             NotificationSetting::Connect => self.settings.notify_connect,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect,
             NotificationSetting::Low => self.settings.notify_low,
             NotificationSetting::Charged => self.settings.notify_charged,
         }
@@ -280,6 +283,7 @@ impl ConfigureWindow {
 
         for setting in [
             NotificationSetting::Connect,
+            NotificationSetting::Disconnect,
             NotificationSetting::Low,
             NotificationSetting::Charged,
         ] {
@@ -338,6 +342,7 @@ impl ConfigureWindow {
     fn notification_enabled(&self, setting: NotificationSetting) -> bool {
         match setting {
             NotificationSetting::Connect => self.settings.notify_connect,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect,
             NotificationSetting::Low => self.settings.notify_low,
             NotificationSetting::Charged => self.settings.notify_charged,
         }
@@ -346,6 +351,7 @@ impl ConfigureWindow {
     fn set_notification(&mut self, setting: NotificationSetting, enabled: bool) {
         match setting {
             NotificationSetting::Connect => self.settings.notify_connect = enabled,
+            NotificationSetting::Disconnect => self.settings.notify_disconnect = enabled,
             NotificationSetting::Low => self.settings.notify_low = enabled,
             NotificationSetting::Charged => self.settings.notify_charged = enabled,
         }
@@ -443,8 +449,8 @@ impl ConfigureWindow {
         let accent = state.draft.full;
         fb.fill_rect(0.0, 0.0, WIN_W, TITLE_H, ui::PANEL);
         fb.fill_rect(0.0, 0.0, 4.0, TITLE_H, ui::rgb_of(accent));
-        fb.icon(14.0, 8.0, 36.0, accent);
-        fb.text(58.0, 16.0, DISPLAY_NAME, ui::INK, FONT_TITLE);
+        fb.icon(12.0, 6.0, 28.0, accent);
+        fb.text(48.0, 10.0, DISPLAY_NAME, ui::INK, FONT_TITLE);
         let cursor = state.cursor;
         paint_title_button(
             fb,
@@ -463,16 +469,18 @@ impl ConfigureWindow {
     }
 
     fn paint_settings(state: PaintState, fb: &mut Framebuffer<'_>) {
-        section_heading(fb, PAD, 70.0, "Settings", "Controller notifications");
+        section_heading(fb, PAD, 58.0, "Settings", "Controller notifications");
         card(fb, notifications_card());
         for setting in [
             NotificationSetting::Connect,
+            NotificationSetting::Disconnect,
             NotificationSetting::Low,
             NotificationSetting::Charged,
         ] {
             let row = notification_row(setting);
             let label = match setting {
                 NotificationSetting::Connect => "Controller connected",
+                NotificationSetting::Disconnect => "Controller disconnected",
                 NotificationSetting::Low => "Low battery",
                 NotificationSetting::Charged => "Fully charged",
             };
@@ -489,7 +497,7 @@ impl ConfigureWindow {
         section_heading(
             fb,
             PAD,
-            260.0,
+            270.0,
             "Toast position",
             "Select a corner to preview",
         );
@@ -507,7 +515,7 @@ impl ConfigureWindow {
             paint_choice(fb, rect, label, selected, hot, state.draft.full);
         }
 
-        section_heading(fb, PAD, 438.0, "System", "Launch preferences");
+        section_heading(fb, PAD, 432.0, "System", "Launch preferences");
         card(fb, system_card());
         #[cfg(windows)]
         {
@@ -541,7 +549,7 @@ impl ConfigureWindow {
         section_heading(
             fb,
             RIGHT_X,
-            70.0,
+            58.0,
             "Lightbar colors",
             "Blend three colors across battery level",
         );
@@ -700,23 +708,24 @@ fn close_rect() -> Rect {
 fn notifications_card() -> Rect {
     Rect {
         x: PAD,
-        y: 104.0,
+        y: 92.0,
         w: LEFT_W,
-        h: 134.0,
+        h: 162.0,
     }
 }
 
 fn notification_row(setting: NotificationSetting) -> Rect {
     let index = match setting {
         NotificationSetting::Connect => 0,
-        NotificationSetting::Low => 1,
-        NotificationSetting::Charged => 2,
+        NotificationSetting::Disconnect => 1,
+        NotificationSetting::Low => 2,
+        NotificationSetting::Charged => 3,
     };
     Rect {
         x: PAD + 4.0,
-        y: 110.0 + index as f64 * 40.0,
+        y: 96.0 + index as f64 * 38.0,
         w: LEFT_W - 8.0,
-        h: 38.0,
+        h: 36.0,
     }
 }
 
@@ -732,9 +741,9 @@ fn switch_rect(row: Rect) -> Rect {
 fn position_card() -> Rect {
     Rect {
         x: PAD,
-        y: 294.0,
+        y: 304.0,
         w: LEFT_W,
-        h: 126.0,
+        h: 112.0,
     }
 }
 
@@ -756,16 +765,16 @@ fn position_rect(position: ToastPosition) -> Rect {
     };
     Rect {
         x: PAD + 8.0 + column as f64 * 122.0,
-        y: 302.0 + row as f64 * 55.0,
+        y: 310.0 + row as f64 * 49.0,
         w: 114.0,
-        h: 47.0,
+        h: 41.0,
     }
 }
 
 fn system_card() -> Rect {
     Rect {
         x: PAD,
-        y: 472.0,
+        y: 466.0,
         w: LEFT_W,
         h: 60.0,
     }
@@ -775,7 +784,7 @@ fn system_card() -> Rect {
 fn autostart_row() -> Rect {
     Rect {
         x: PAD + 4.0,
-        y: 483.0,
+        y: 477.0,
         w: LEFT_W - 8.0,
         h: 38.0,
     }
@@ -784,7 +793,7 @@ fn autostart_row() -> Rect {
 fn preview_rect() -> Rect {
     Rect {
         x: RIGHT_X,
-        y: 104.0,
+        y: 92.0,
         w: RIGHT_W,
         h: 76.0,
     }
@@ -799,7 +808,7 @@ fn stop_rect(stop: Stop) -> Rect {
     let width = (RIGHT_W - 16.0) / 3.0;
     Rect {
         x: RIGHT_X + index as f64 * (width + 8.0),
-        y: 192.0,
+        y: 176.0,
         w: width,
         h: 82.0,
     }
@@ -808,7 +817,7 @@ fn stop_rect(stop: Stop) -> Rect {
 fn picker_rect() -> Rect {
     Rect {
         x: RIGHT_X,
-        y: 286.0,
+        y: 270.0,
         w: RIGHT_W,
         h: 204.0,
     }
@@ -837,7 +846,7 @@ fn hue_rect() -> Rect {
 fn reset_rect() -> Rect {
     Rect {
         x: RIGHT_X,
-        y: 504.0,
+        y: 488.0,
         w: 124.0,
         h: 36.0,
     }
@@ -846,7 +855,7 @@ fn reset_rect() -> Rect {
 fn apply_rect() -> Rect {
     Rect {
         x: RIGHT_X + RIGHT_W - 92.0,
-        y: 504.0,
+        y: 488.0,
         w: 92.0,
         h: 36.0,
     }

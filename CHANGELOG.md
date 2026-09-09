@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Steam-style, always-on-top overlay toasts replace OS notifications for controller connect, low-battery, and charged events.
+- Steam-style, always-on-top overlay toasts replace OS notifications for controller connect, disconnect, low-battery, and charged events.
 - Configure’s Toast position controls select any screen corner and immediately preview the placement.
 
 ### Changed
 
 - Toasts slide vertically in and out from their configured screen edge, dismiss on click, Escape, or automatically after five seconds, and queue when multiple controller events occur together.
 - Configure now uses the same dark visual language as overlay toasts, with custom window chrome and notification, position, autostart, lightbar, and developer controls directly in the window.
+- Configure’s custom title bar is more compact.
 
 ## [0.1.10] - 2026-08-30
 

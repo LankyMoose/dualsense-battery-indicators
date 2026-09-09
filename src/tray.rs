@@ -245,6 +245,7 @@ impl TrayApp {
             notify_low: self.prefs.notify_low,
             notify_charged: self.prefs.notify_charged,
             notify_connect: self.prefs.notify_connect,
+            notify_disconnect: self.prefs.notify_disconnect,
             toast_position: self.prefs.toast_position,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
@@ -588,6 +589,7 @@ impl TrayApp {
     fn set_notification(&mut self, setting: NotificationSetting, enabled: bool) {
         match setting {
             NotificationSetting::Connect => self.prefs.notify_connect = enabled,
+            NotificationSetting::Disconnect => self.prefs.notify_disconnect = enabled,
             NotificationSetting::Low => self.prefs.notify_low = enabled,
             NotificationSetting::Charged => self.prefs.notify_charged = enabled,
         }

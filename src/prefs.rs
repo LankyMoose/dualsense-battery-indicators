@@ -25,6 +25,8 @@ pub struct Prefs {
     pub notify_charged: bool,
     #[serde(default = "default_true")]
     pub notify_connect: bool,
+    #[serde(default = "default_true")]
+    pub notify_disconnect: bool,
     #[serde(default)]
     pub toast_position: ToastPosition,
     #[serde(default)]
@@ -41,6 +43,7 @@ impl Default for Prefs {
             notify_low: true,
             notify_charged: true,
             notify_connect: true,
+            notify_disconnect: true,
             toast_position: ToastPosition::default(),
             spectrum: BatterySpectrum::DEFAULT,
         }
@@ -130,6 +133,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prefs.toast_position, ToastPosition::TopRight);
+        assert!(prefs.notify_disconnect);
     }
 
     #[test]

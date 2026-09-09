@@ -18,6 +18,7 @@ pub struct NotifyTracker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NotifyKind {
     Connect,
+    Disconnect,
     Low,
     Charged,
 }
@@ -41,10 +42,20 @@ impl NotifyTracker {
         next: &[ControllerStatus],
         prefs: &Prefs,
     ) -> Vec<NotifyEvent> {
-        self.collect_events(previous, next, prefs)
+        let mut events: Vec<_> = self
+            .collect_events(previous, next, prefs)
             .into_iter()
             .map(|(controller, kind)| format_event(controller, kind))
-            .collect()
+            .collect();
+        if prefs.notify_disconnect {
+            events.extend(
+                previous
+                    .iter()
+                    .filter(|controller| !next.iter().any(|next| next.serial == controller.serial))
+                    .map(|controller| format_event(controller, NotifyKind::Disconnect)),
+            );
+        }
+        events
     }
 
     fn collect_events<'a>(
@@ -107,6 +118,11 @@ fn format_event(controller: &ControllerStatus, kind: NotifyKind) -> NotifyEvent 
             body: format!("connected — {}%", controller.percent),
             percent: Some(controller.percent),
         },
+        NotifyKind::Disconnect => NotifyEvent {
+            heading,
+            body: "disconnected".to_string(),
+            percent: Some(controller.percent),
+        },
         NotifyKind::Low => NotifyEvent {
             heading,
             body: format!("is low — {}%", controller.percent),
@@ -146,6 +162,7 @@ mod tests {
             notify_low,
             notify_charged,
             notify_connect,
+            notify_disconnect: true,
             toast_position: Default::default(),
             spectrum: Default::default(),
         }
@@ -178,6 +195,25 @@ mod tests {
         assert_eq!(tracker.collect_events(&[], &connected, &p).len(), 1);
         assert!(tracker.collect_events(&connected, &[], &p).is_empty());
         assert_eq!(tracker.collect_events(&[], &connected, &p).len(), 1);
+    }
+
+    #[test]
+    fn disconnect_notifies_with_last_known_battery() {
+        let mut tracker = NotifyTracker::new();
+        let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
+        let events = tracker.evaluate(&connected, &[], &prefs(true, true, false));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].body, "disconnected");
+        assert_eq!(events[0].percent, Some(40));
+    }
+
+    #[test]
+    fn disconnect_notifications_can_be_disabled() {
+        let mut tracker = NotifyTracker::new();
+        let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
+        let mut preferences = prefs(true, true, false);
+        preferences.notify_disconnect = false;
+        assert!(tracker.evaluate(&connected, &[], &preferences).is_empty());
     }
 
     #[test]

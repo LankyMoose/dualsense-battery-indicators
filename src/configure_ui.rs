@@ -560,20 +560,13 @@ fn stop_handle_layout(bar: Rect, percent: u8) -> StopHandleLayout {
 fn section_full_height(section: AccordionSection) -> f64 {
     match section {
         AccordionSection::System => CONTENT_PAD_Y * 2.0 + SYSTEM_ROW_H,
-        AccordionSection::Notifications => {
-            CONTENT_PAD_Y * 2.0 + NOTIFICATION_ROW_H * 4.0
-        }
+        AccordionSection::Notifications => CONTENT_PAD_Y * 2.0 + NOTIFICATION_ROW_H * 4.0,
         AccordionSection::ToastPosition => {
             let stage = position_stage_rect(Rect::new(0.0, 0.0, WIN_W, 0.0));
             CONTENT_PAD_Y * 2.0 + stage.h
         }
         AccordionSection::LightbarColors => {
-            CONTENT_PAD_Y * 2.0
-                + PREVIEW_H
-                + ACCORDION_GAP
-                + PICKER_H
-                + ACCORDION_GAP
-                + RESET_H
+            CONTENT_PAD_Y * 2.0 + PREVIEW_H + ACCORDION_GAP + PICKER_H + ACCORDION_GAP + RESET_H
         }
         #[cfg(feature = "dev-emulate")]
         AccordionSection::Developer => CONTENT_PAD_Y * 2.0 + 65.0,
@@ -884,7 +877,11 @@ impl ConfigureWindow {
         #[cfg(feature = "dev-emulate")]
         if self.expanded_section == AccordionSection::Developer && self.settings.show_developer {
             for (index, preset) in Preset::ALL.iter().copied().enumerate() {
-                if layout.developer_buttons.get(index).is_some_and(|rect| rect.contains(x, y)) {
+                if layout
+                    .developer_buttons
+                    .get(index)
+                    .is_some_and(|rect| rect.contains(x, y))
+                {
                     return ConfigureAction::DeveloperPreset(preset);
                 }
             }
@@ -1069,9 +1066,7 @@ impl ConfigureWindow {
                 AccordionSection::Notifications => {
                     Self::paint_notifications(&state, &layout, &mut fb)
                 }
-                AccordionSection::ToastPosition => {
-                    paint_position_diagram(&mut fb, &layout, &state)
-                }
+                AccordionSection::ToastPosition => paint_position_diagram(&mut fb, &layout, &state),
                 AccordionSection::LightbarColors => Self::paint_editor(&state, &layout, &mut fb),
                 #[cfg(feature = "dev-emulate")]
                 AccordionSection::Developer => Self::paint_developer(&state, &layout, &mut fb),
@@ -1424,11 +1419,7 @@ fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, st
             fb.round_rect(
                 (hit.x, hit.y, rail_w, hit.h),
                 radius.min(rail_w / 2.0),
-                if selected {
-                    ui::INK
-                } else {
-                    ui::MUTED
-                },
+                if selected { ui::INK } else { ui::MUTED },
                 None,
             );
         }

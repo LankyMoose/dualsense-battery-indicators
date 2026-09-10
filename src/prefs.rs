@@ -11,9 +11,11 @@ use std::path::PathBuf;
 #[serde(rename_all = "snake_case")]
 pub enum ToastPosition {
     TopLeft,
-    #[default]
+    TopCenter,
     TopRight,
     BottomLeft,
+    #[default]
+    BottomCenter,
     BottomRight,
 }
 
@@ -127,12 +129,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn older_prefs_default_to_top_right() {
+    fn older_prefs_default_to_bottom_center() {
         let prefs: Prefs = serde_json::from_str(
             r#"{"notify_low":true,"notify_charged":true,"notify_connect":true}"#,
         )
         .unwrap();
-        assert_eq!(prefs.toast_position, ToastPosition::TopRight);
+        assert_eq!(prefs.toast_position, ToastPosition::BottomCenter);
         assert!(prefs.notify_disconnect);
     }
 
@@ -154,6 +156,14 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ToastPosition::BottomLeft).unwrap(),
             r#""bottom_left""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToastPosition::TopCenter).unwrap(),
+            r#""top_center""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToastPosition::BottomCenter).unwrap(),
+            r#""bottom_center""#
         );
     }
 }

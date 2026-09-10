@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-09-10
+
+### Added
+
+- Toast position options for **top center** and **bottom center** (default is now bottom center).
+
+### Changed
+
+- Overlay toasts always appear on the primary monitor, sized to their content with uniform padding, and use sentence-cased status text.
+
 ## [0.1.11] - 2026-09-10
 
 ### Added
@@ -118,6 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.12]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.8...v0.1.9

@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-09-11
+
 ### Added
 
 - Bluetooth **Turn off** action in the controller popup (HID feature report `0x08`).
-- SVG icons under `assets/icons/` for DualSense, Settings, Identify, and Power; rasterized with `resvg`.
+- SVG icons under `assets/icons/` for DualSense, Settings, Identify, Power, Close, Minimize, and Check; rasterized with `resvg`.
 
 ### Changed
 
@@ -140,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.13]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.9...v0.1.10

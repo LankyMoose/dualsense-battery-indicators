@@ -1,7 +1,8 @@
-//! Build script: embed Windows .exe icon from the same DualSense silhouette as the tray.
+//! Build script: embed Windows .exe icon from DualSense SVG (same as tray).
 
-#[path = "src/icon_draw.rs"]
-mod icon_draw;
+#[allow(dead_code)]
+#[path = "src/svg_icon.rs"]
+mod svg_icon;
 
 use std::env;
 use std::fs;
@@ -9,17 +10,20 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const DISPLAY_NAME: &str = "DualSense Battery Indicators";
+const TRAY_SIZE: u32 = 32;
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let connected = icon_draw::render_connected_rgba();
-    let dim = icon_draw::render_dim_rgba();
+    let connected = svg_icon::render_dualsense_connected_rgba(TRAY_SIZE)
+        .expect("rasterize connected DualSense icon");
+    let dim =
+        svg_icon::render_dualsense_dim_rgba(TRAY_SIZE).expect("rasterize dim DualSense icon");
 
     write_embedded_bytes(&out_dir, &connected, &dim);
 
     #[cfg(windows)]
     {
-        write_app_ico(&out_dir, &connected);
+        write_app_ico(&out_dir);
         let ico_path = out_dir.join("app.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon(ico_path.to_str().expect("utf-8 icon path"));
@@ -34,7 +38,14 @@ fn main() {
         }
     }
 
-    println!("cargo:rerun-if-changed=src/icon_draw.rs");
+    println!("cargo:rerun-if-changed=src/svg_icon.rs");
+    println!("cargo:rerun-if-changed=assets/icons/dualsense.svg");
+    println!("cargo:rerun-if-changed=assets/icons/settings.svg");
+    println!("cargo:rerun-if-changed=assets/icons/identify.svg");
+    println!("cargo:rerun-if-changed=assets/icons/power.svg");
+    println!("cargo:rerun-if-changed=assets/icons/close.svg");
+    println!("cargo:rerun-if-changed=assets/icons/minimize.svg");
+    println!("cargo:rerun-if-changed=assets/icons/check.svg");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -46,16 +57,13 @@ fn write_embedded_bytes(out_dir: &Path, connected: &[u8], dim: &[u8]) {
 }
 
 #[cfg(windows)]
-fn write_app_ico(out_dir: &Path, connected_32: &[u8]) {
+fn write_app_ico(out_dir: &Path) {
     use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
 
     let mut icon_dir = IconDir::new(ResourceType::Icon);
     for size in [16u32, 32, 48, 256] {
-        let rgba = if size == icon_draw::SIZE {
-            connected_32.to_vec()
-        } else {
-            icon_draw::scale_rgba_nn(connected_32, size)
-        };
+        let rgba = svg_icon::render_dualsense_connected_rgba(size)
+            .unwrap_or_else(|err| panic!("rasterize DualSense {size}x{size}: {err}"));
         let image = IconImage::from_rgba_data(size, size, rgba);
         icon_dir.add_entry(IconDirEntry::encode(&image).expect("encode ico entry"));
     }

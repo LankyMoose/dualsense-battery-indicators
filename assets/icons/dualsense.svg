@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
+  <!-- Body (canonical #EBEBF0) -->
+  <rect x="8" y="10" width="16" height="11" fill="#EBEBF0"/>
+  <rect x="3" y="12" width="7" height="11" fill="#EBEBF0"/>
+  <rect x="2" y="16" width="5" height="9" fill="#EBEBF0"/>
+  <rect x="3" y="25" width="1" height="1" fill="#EBEBF0"/>
+  <rect x="4" y="25" width="1" height="1" fill="#EBEBF0"/>
+  <rect x="22" y="12" width="7" height="11" fill="#EBEBF0"/>
+  <rect x="25" y="16" width="5" height="9" fill="#EBEBF0"/>
+  <rect x="27" y="25" width="1" height="1" fill="#EBEBF0"/>
+  <rect x="28" y="25" width="1" height="1" fill="#EBEBF0"/>
+  <rect x="6" y="8" width="7" height="3" fill="#EBEBF0"/>
+  <rect x="19" y="8" width="7" height="3" fill="#EBEBF0"/>
+  <!-- Shade (canonical #282830) -->
+  <rect x="12" y="11" width="8" height="5" fill="#282830"/>
+  <circle cx="9" cy="18" r="2.5" fill="#282830"/>
+  <circle cx="22" cy="18" r="2.5" fill="#282830"/>
+  <rect x="7" y="14" width="1" height="1" fill="#282830"/>
+  <rect x="6" y="15" width="1" height="1" fill="#282830"/>
+  <rect x="7" y="15" width="1" height="1" fill="#282830"/>
+  <rect x="8" y="15" width="1" height="1" fill="#282830"/>
+  <rect x="7" y="16" width="1" height="1" fill="#282830"/>
+  <rect x="23" y="13" width="1" height="1" fill="#282830"/>
+  <rect x="22" y="14" width="1" height="1" fill="#282830"/>
+  <rect x="24" y="14" width="1" height="1" fill="#282830"/>
+  <rect x="23" y="15" width="1" height="1" fill="#282830"/>
+  <!-- Accent / lightbar (canonical #005AFF) -->
+  <rect x="12" y="16" width="8" height="2" fill="#005AFF"/>
+</svg>

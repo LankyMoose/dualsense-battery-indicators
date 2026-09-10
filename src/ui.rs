@@ -3,7 +3,7 @@
 pub mod layout;
 
 use crate::color::Rgb;
-use crate::icon_draw;
+use crate::svg_icon::{self, ColorMap, RgbaColor};
 use fontdue::Font;
 use layout::Rect;
 
@@ -267,22 +267,46 @@ impl<'a> Framebuffer<'a> {
         }
     }
 
+    /// Draw the DualSense SVG with a spectrum/accent lightbar color.
     pub fn icon(&mut self, x: f64, y: f64, size: f64, accent: Rgb) {
-        let pixels = icon_draw::render(
-            icon_draw::BODY,
-            icon_draw::SHADE,
-            [accent.r, accent.g, accent.b, 255],
-        );
+        let colors = ColorMap::dualsense_connected(RgbaColor::rgb(accent.r, accent.g, accent.b));
+        self.svg(x, y, size, svg_icon::DUALSENSE_SVG, &colors);
+    }
+
+    /// Draw a DualSense SVG with the dim tray palette (disconnected / muted).
+    pub fn icon_dim(&mut self, x: f64, y: f64, size: f64) {
+        self.svg(x, y, size, svg_icon::DUALSENSE_SVG, &ColorMap::dualsense_dim());
+    }
+
+    /// Draw a Lucide-style `currentColor` SVG tinted to `color`.
+    pub fn svg_icon(&mut self, x: f64, y: f64, size: f64, svg: &str, color: u32) {
+        let colors = ColorMap::current_color(RgbaColor::rgb(
+            ((color >> 16) & 0xff) as u8,
+            ((color >> 8) & 0xff) as u8,
+            (color & 0xff) as u8,
+        ));
+        self.svg(x, y, size, svg, &colors);
+    }
+
+    fn svg(&mut self, x: f64, y: f64, size: f64, svg: &str, colors: &ColorMap) {
         let x0 = self.to_phys(x);
         let y0 = self.to_phys(y);
-        let out = self.to_phys(size).max(1);
+        let out = self.to_phys(size).max(1) as u32;
+        let Ok(rgba) = svg_icon::rasterize(svg, out, colors) else {
+            return;
+        };
         for dy in 0..out {
             for dx in 0..out {
-                let sx = dx * icon_draw::SIZE as i32 / out;
-                let sy = dy * icon_draw::SIZE as i32 / out;
-                let source = pixels[(sy as u32 * icon_draw::SIZE + sx as u32) as usize];
-                if source[3] != 0 {
-                    self.put_phys(x0 + dx, y0 + dy, rgb(source[0], source[1], source[2]));
+                let i = ((dy * out + dx) * 4) as usize;
+                let alpha = rgba[i + 3];
+                if alpha == 0 {
+                    continue;
+                }
+                let color = rgb(rgba[i], rgba[i + 1], rgba[i + 2]);
+                if alpha == 255 {
+                    self.put_phys(x0 + dx as i32, y0 + dy as i32, color);
+                } else {
+                    self.blend_phys(x0 + dx as i32, y0 + dy as i32, color, alpha);
                 }
             }
         }

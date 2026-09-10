@@ -3,6 +3,7 @@
 use crate::battery::ControllerStatus;
 use crate::color::{BatterySpectrum, Rgb};
 use crate::known::KnownController;
+use crate::svg_icon;
 use crate::ui::layout::{self, LayoutTree, Rect};
 use crate::ui::{self, Framebuffer};
 use fontdue::Font;
@@ -24,6 +25,10 @@ use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
 
 const WIDTH: f64 = 360.0;
 const MAX_VISIBLE_ROWS: usize = 6;
+const RAIL_W: f64 = 3.0;
+const GLYPH_SIZE: f64 = 28.0;
+const ACTION_SIZE: f64 = 22.0;
+const ROW_INNER_HEIGHT: f64 = 72.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TrayAnchor {
@@ -82,12 +87,21 @@ impl ControllerRow {
             low: false,
         }
     }
+
+    pub fn show_identify(&self) -> bool {
+        self.connected
+    }
+
+    pub fn show_power_off(&self) -> bool {
+        self.connected && self.connection == "Bluetooth"
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PopupAction {
     None,
     Identify(String),
+    PowerOff(String),
     ToggleRemember(String),
     OpenSettings,
     Closed,
@@ -96,10 +110,14 @@ pub enum PopupAction {
 #[derive(Clone)]
 struct PopupRowLayout {
     bounds: Rect,
+    rail: Rect,
+    glyph: Rect,
     product: Rect,
     percent: Rect,
     detail: Rect,
     bar: Rect,
+    identify: Option<Rect>,
+    turn_off: Option<Rect>,
     remember: Rect,
     remember_label: Rect,
     remember_check: Rect,
@@ -119,8 +137,8 @@ struct PopupLayout {
 }
 
 impl PopupLayout {
-    fn compute(font: &Font, row_count: usize) -> Result<Self, String> {
-        let visible_count = row_count.min(MAX_VISIBLE_ROWS);
+    fn compute(font: &Font, rows: &[ControllerRow]) -> Result<Self, String> {
+        let visible = &rows[..rows.len().min(MAX_VISIBLE_ROWS)];
         let mut tree = LayoutTree::new();
 
         let icon = tree.leaf(popup_fixed(
@@ -170,7 +188,7 @@ impl PopupLayout {
         let mut row_nodes = Vec::new();
         let mut row_parts = Vec::new();
         let mut empty_nodes = None;
-        if visible_count == 0 {
+        if visible.is_empty() {
             let empty_title = tree.text(
                 "No controllers connected",
                 13.0,
@@ -187,8 +205,20 @@ impl PopupLayout {
                 &[empty_title, empty_body],
             )?);
         } else {
-            for _ in 0..visible_count {
+            for row in visible {
+                let rail = tree.leaf(popup_fixed(Some(RAIL_W), None, 0.0))?;
+                let glyph = tree.leaf(popup_fixed(Some(GLYPH_SIZE), Some(GLYPH_SIZE), 0.0))?;
                 let product = tree.text("", 13.0, popup_flexible_text_style(Some(20.0), 1.0))?;
+                let identify = if row.show_identify() {
+                    Some(tree.leaf(popup_fixed(Some(ACTION_SIZE), Some(ACTION_SIZE), 0.0))?)
+                } else {
+                    None
+                };
+                let turn_off = if row.show_power_off() {
+                    Some(tree.leaf(popup_fixed(Some(ACTION_SIZE), Some(ACTION_SIZE), 0.0))?)
+                } else {
+                    None
+                };
                 let remember_label =
                     tree.text("Remember", 10.5, popup_fixed(None, Some(20.0), 0.0))?;
                 let remember_check = tree.leaf(popup_fixed(Some(20.0), Some(20.0), 0.0))?;
@@ -203,6 +233,15 @@ impl PopupLayout {
                     },
                     &[remember_label, remember_check],
                 )?;
+
+                let mut title_children = vec![glyph, product];
+                if let Some(node) = identify {
+                    title_children.push(node);
+                }
+                if let Some(node) = turn_off {
+                    title_children.push(node);
+                }
+                title_children.push(remember);
                 let title_row = tree.container(
                     Style {
                         gap: Size {
@@ -210,9 +249,9 @@ impl PopupLayout {
                             height: LengthPercentage::length(0.0),
                         },
                         align_items: Some(AlignItems::CENTER),
-                        ..popup_row(Some(24.0))
+                        ..popup_row(Some(GLYPH_SIZE.max(24.0)))
                     },
-                    &[product, remember],
+                    &title_children,
                 )?;
                 let detail = tree.text("", 10.5, popup_flexible_text_style(Some(16.0), 1.0))?;
                 let percent = tree.text("100%", 11.0, popup_fixed(Some(42.0), Some(16.0), 0.0))?;
@@ -227,29 +266,47 @@ impl PopupLayout {
                     &[detail, percent],
                 )?;
                 let bar = tree.leaf(popup_fixed(None, Some(6.0), 0.0))?;
-                let row = tree.container(
+                let body = tree.container(
                     Style {
                         padding: taffy::geometry::Rect {
-                            left: LengthPercentage::length(layout::SPACE_3 as f32),
+                            left: LengthPercentage::length(layout::SPACE_2 as f32),
                             right: LengthPercentage::length(layout::SPACE_3 as f32),
                             top: LengthPercentage::length(6.0),
-                            bottom: LengthPercentage::length(4.0),
+                            bottom: LengthPercentage::length(6.0),
                         },
                         gap: Size {
                             width: LengthPercentage::length(0.0),
                             height: LengthPercentage::length(layout::SPACE_1 as f32),
                         },
-                        ..popup_column(Some(66.0), 0.0, 0.0)
+                        flex_grow: 1.0,
+                        ..popup_column(None, 0.0, 0.0)
                     },
                     &[title_row, detail_row, bar],
                 )?;
-                row_nodes.push(row);
+                let row_node = tree.container(
+                    Style {
+                        display: Display::Flex,
+                        flex_direction: FlexDirection::Row,
+                        align_items: Some(AlignItems::STRETCH),
+                        size: Size {
+                            width: Dimension::auto(),
+                            height: Dimension::length(ROW_INNER_HEIGHT as f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[rail, body],
+                )?;
+                row_nodes.push(row_node);
                 row_parts.push((
-                    row,
+                    row_node,
+                    rail,
+                    glyph,
                     product,
                     percent,
                     detail,
                     bar,
+                    identify,
+                    turn_off,
                     remember,
                     remember_label,
                     remember_check,
@@ -267,7 +324,7 @@ impl PopupLayout {
                 },
                 gap: Size {
                     width: LengthPercentage::length(0.0),
-                    height: LengthPercentage::length(6.0),
+                    height: LengthPercentage::length(layout::SPACE_2 as f32),
                 },
                 ..popup_column(None, 0.0, 0.0)
             },
@@ -291,10 +348,14 @@ impl PopupLayout {
             .map(
                 |(
                     bounds,
+                    rail,
+                    glyph,
                     product,
                     percent,
                     detail,
                     bar,
+                    identify,
+                    turn_off,
                     remember,
                     remember_label,
                     remember_check,
@@ -302,10 +363,14 @@ impl PopupLayout {
                  -> Result<_, String> {
                     Ok(PopupRowLayout {
                         bounds: tree.rect(bounds)?,
+                        rail: tree.rect(rail)?,
+                        glyph: tree.rect(glyph)?,
                         product: tree.rect(product)?,
                         percent: tree.rect(percent)?,
                         detail: tree.rect(detail)?,
                         bar: tree.rect(bar)?,
+                        identify: identify.map(|n| tree.rect(n)).transpose()?,
+                        turn_off: turn_off.map(|n| tree.rect(n)).transpose()?,
                         remember: tree.rect(remember)?,
                         remember_label: tree.rect(remember_label)?,
                         remember_check: tree.rect(remember_check)?,
@@ -391,7 +456,7 @@ pub struct ControllerPopup {
 impl ControllerPopup {
     pub fn open(event_loop: &ActiveEventLoop, display: OwnedDisplayHandle) -> Result<Self, String> {
         let font = ui::load_system_ui_font()?;
-        let layout = PopupLayout::compute(&font, 0)?;
+        let layout = PopupLayout::compute(&font, &[])?;
         let attrs = WindowAttributes::default()
             .with_title("DualSense controllers")
             .with_inner_size(LogicalSize::new(WIDTH, layout.height))
@@ -433,7 +498,7 @@ impl ControllerPopup {
     }
 
     pub fn sync(&mut self, rows: Vec<ControllerRow>, spectrum: BatterySpectrum) {
-        let layout = match PopupLayout::compute(&self.font, rows.len()) {
+        let layout = match PopupLayout::compute(&self.font, &rows) {
             Ok(layout) => layout,
             Err(err) => {
                 crate::app_log::warn(format!("controller popup layout failed: {err}"));
@@ -617,6 +682,17 @@ impl ControllerPopup {
                     &spectrum,
                     cursor,
                 );
+                if visible_index + 1 < visible_count {
+                    let bounds = layout.rows[visible_index].bounds;
+                    let y = bounds.bottom() + layout::SPACE_2 / 2.0;
+                    fb.fill_rect(
+                        bounds.x + RAIL_W + layout::SPACE_2,
+                        y,
+                        (bounds.w - RAIL_W - layout::SPACE_2).max(0.0),
+                        1.0,
+                        ui::LINE,
+                    );
+                }
             }
         }
         buffer.present().map_err(|e| format!("present: {e}"))
@@ -666,7 +742,7 @@ impl ControllerPopup {
             if hot { ui::PANEL_HOVER } else { ui::PANEL },
             None,
         );
-        paint_settings_cog(fb, settings, hot);
+        paint_action_icon(fb, settings, svg_icon::SETTINGS_SVG, hot);
         if row_count > MAX_VISIBLE_ROWS {
             let message = format!(
                 "{}–{} of {}",
@@ -692,18 +768,32 @@ impl ControllerPopup {
         spectrum: &BatterySpectrum,
         cursor: Option<(f64, f64)>,
     ) {
-        let rect = layout.bounds;
-        let hot = cursor.is_some_and(|(x, y)| rect.contains(x, y));
+        let rail_color = if row.connected {
+            ui::rgb_of(spectrum.color_at_percent(row.percent))
+        } else {
+            ui::rgb(100, 108, 120)
+        };
+        let rail = layout.rail;
         fb.round_rect(
-            (rect.x, rect.y, rect.w, rect.h),
-            8.0,
-            if hot && row.connected {
-                ui::PANEL_HOVER
-            } else {
-                ui::PANEL
-            },
-            Some(ui::LINE),
+            (rail.x, rail.y + 2.0, rail.w, (rail.h - 4.0).max(0.0)),
+            (rail.w / 2.0).max(1.0),
+            rail_color,
+            None,
         );
+
+        let glyph = layout.glyph;
+        let glyph_size = glyph.w.min(glyph.h);
+        if row.connected {
+            fb.icon(
+                glyph.x,
+                glyph.y,
+                glyph_size,
+                spectrum.color_at_percent(row.percent),
+            );
+        } else {
+            fb.icon_dim(glyph.x, glyph.y, glyph_size);
+        }
+
         let title_color = if row.connected { ui::INK } else { ui::MUTED };
         fb.text_in_rect(
             layout.product,
@@ -713,6 +803,16 @@ impl ControllerPopup {
             ui::HorizontalAlign::Left,
             ui::VerticalAlign::Center,
         );
+
+        if let Some(identify) = layout.identify {
+            let hot = cursor.is_some_and(|(x, y)| identify.contains(x, y));
+            paint_action_icon(fb, identify, svg_icon::IDENTIFY_SVG, hot);
+        }
+        if let Some(turn_off) = layout.turn_off {
+            let hot = cursor.is_some_and(|(x, y)| turn_off.contains(x, y));
+            paint_action_icon(fb, turn_off, svg_icon::POWER_SVG, hot);
+        }
+
         let percent = format!("{}%", row.percent);
         fb.text_in_rect(
             layout.percent,
@@ -778,11 +878,33 @@ fn action_at(
                 PopupAction::None
             };
         }
-        if row_layout.bounds.contains(x, y) && row.connected {
+        if row_layout
+            .turn_off
+            .is_some_and(|rect| rect.contains(x, y))
+        {
+            return PopupAction::PowerOff(row.serial.clone());
+        }
+        if row_layout
+            .identify
+            .is_some_and(|rect| rect.contains(x, y))
+        {
             return PopupAction::Identify(row.serial.clone());
         }
     }
     PopupAction::None
+}
+
+fn paint_action_icon(fb: &mut Framebuffer<'_>, rect: Rect, svg: &str, hot: bool) {
+    fb.round_rect(
+        (rect.x, rect.y, rect.w, rect.h),
+        6.0,
+        if hot { ui::PANEL_HOVER } else { ui::BG },
+        None,
+    );
+    let inset = 3.0;
+    let size = (rect.w.min(rect.h) - inset * 2.0).max(8.0);
+    let color = if hot { ui::INK } else { ui::MUTED };
+    fb.svg_icon(rect.x + inset, rect.y + inset, size, svg, color);
 }
 
 fn paint_remember(fb: &mut Framebuffer<'_>, label: Rect, rect: Rect, row: &ControllerRow) {
@@ -814,40 +936,16 @@ fn paint_remember(fb: &mut Framebuffer<'_>, label: Rect, rect: Rect, row: &Contr
         }),
     );
     if row.remembered {
-        fb.line(
-            (checkbox.x + 4.5, checkbox.y + 8.0),
-            (checkbox.x + 6.5, checkbox.y + 10.0),
-            1.0,
-            ui::INK,
-        );
-        fb.line(
-            (checkbox.x + 6.5, checkbox.y + 10.0),
-            (checkbox.x + 11.5, checkbox.y + 5.0),
-            1.0,
+        let inset = 2.5;
+        let size = (checkbox.w.min(checkbox.h) - inset * 2.0).max(8.0);
+        fb.svg_icon(
+            checkbox.x + inset,
+            checkbox.y + inset,
+            size,
+            svg_icon::CHECK_SVG,
             ui::INK,
         );
     }
-}
-
-fn paint_settings_cog(fb: &mut Framebuffer<'_>, rect: Rect, hot: bool) {
-    let color = if hot { ui::INK } else { ui::MUTED };
-    let background = if hot { ui::PANEL_HOVER } else { ui::PANEL };
-    let cx = rect.x + rect.w / 2.0;
-    let cy = rect.y + rect.h / 2.0;
-    for (from, to) in [
-        ((cx, cy - 4.0), (cx, cy - 8.0)),
-        ((cx + 4.0, cy), (cx + 8.0, cy)),
-        ((cx, cy + 4.0), (cx, cy + 8.0)),
-        ((cx - 4.0, cy), (cx - 8.0, cy)),
-        ((cx + 3.0, cy - 3.0), (cx + 6.0, cy - 6.0)),
-        ((cx + 3.0, cy + 3.0), (cx + 6.0, cy + 6.0)),
-        ((cx - 3.0, cy + 3.0), (cx - 6.0, cy + 6.0)),
-        ((cx - 3.0, cy - 3.0), (cx - 6.0, cy - 6.0)),
-    ] {
-        fb.line(from, to, 2.0, color);
-    }
-    fb.round_rect((cx - 6.0, cy - 6.0, 12.0, 12.0), 6.0, color, None);
-    fb.round_rect((cx - 2.5, cy - 2.5, 5.0, 5.0), 2.5, background, None);
 }
 
 #[derive(Clone, Copy)]
@@ -977,25 +1075,57 @@ mod tests {
     use super::*;
     use crate::battery::PowerState;
 
+    fn sample_row(connection: &str, connected: bool) -> ControllerRow {
+        ControllerRow {
+            serial: "abc".into(),
+            product: "DualSense".into(),
+            connection: connection.into(),
+            state: if connected {
+                "discharging".into()
+            } else {
+                "disconnected".into()
+            },
+            percent: 50,
+            connected,
+            remembered: false,
+            remember_enabled: true,
+            low: false,
+        }
+    }
+
+    fn rows_n(n: usize, connection: &str) -> Vec<ControllerRow> {
+        (0..n)
+            .map(|i| {
+                let mut row = sample_row(connection, true);
+                row.serial = format!("pad{i}");
+                row
+            })
+            .collect()
+    }
+
     #[test]
     fn popup_height_caps_at_six_rows() {
         let font = ui::load_system_ui_font().unwrap();
-        assert_eq!(PopupLayout::compute(&font, 0).unwrap().height, 130.0);
-        assert_eq!(PopupLayout::compute(&font, 2).unwrap().height, 198.0);
-        assert_eq!(PopupLayout::compute(&font, 20).unwrap().height, 486.0);
-        assert_eq!(
-            PopupLayout::compute(&font, 1).unwrap().header.h,
-            layout::WINDOW_HEADER_HEIGHT
-        );
+        let empty = PopupLayout::compute(&font, &[]).unwrap();
+        let two = PopupLayout::compute(&font, &rows_n(2, "USB")).unwrap();
+        let many = PopupLayout::compute(&font, &rows_n(20, "USB")).unwrap();
+        let one = PopupLayout::compute(&font, &rows_n(1, "USB")).unwrap();
+        assert!(empty.height > 100.0);
+        assert!(two.height > empty.height);
+        assert_eq!(many.rows.len(), MAX_VISIBLE_ROWS);
+        assert!(many.height > two.height);
+        assert_eq!(one.header.h, layout::WINDOW_HEADER_HEIGHT);
     }
 
     #[test]
     fn popup_row_children_are_computed_inside_each_row() {
         let font = ui::load_system_ui_font().unwrap();
-        let layout = PopupLayout::compute(&font, 6).unwrap();
+        let layout = PopupLayout::compute(&font, &rows_n(6, "Bluetooth")).unwrap();
         assert_eq!(layout.rows.len(), 6);
         for row in &layout.rows {
             for child in [
+                row.rail,
+                row.glyph,
                 row.product,
                 row.percent,
                 row.detail,
@@ -1006,9 +1136,11 @@ mod tests {
             ] {
                 assert!(child.x >= row.bounds.x);
                 assert!(child.y >= row.bounds.y);
-                assert!(child.right() <= row.bounds.right());
-                assert!(child.bottom() <= row.bounds.bottom());
+                assert!(child.right() <= row.bounds.right() + 0.5);
+                assert!(child.bottom() <= row.bounds.bottom() + 0.5);
             }
+            assert!(row.identify.is_some());
+            assert!(row.turn_off.is_some());
             assert!(row.product.right() <= row.remember.x);
             assert!(row.detail.right() <= row.percent.x);
             assert!(row.remember_label.right() <= row.remember_check.x);
@@ -1071,38 +1203,75 @@ mod tests {
         let row = ControllerRow::connected(&status, true, true);
         assert!(row.connected);
         assert!(row.remembered);
+        assert!(row.show_identify());
+        assert!(!row.show_power_off());
         assert_eq!(row.state, "charging");
     }
 
     #[test]
-    fn remember_hit_takes_precedence_over_identify() {
-        let row = ControllerRow {
-            serial: "abc".into(),
-            product: "DualSense".into(),
-            connection: "USB".into(),
-            state: "discharging".into(),
-            percent: 50,
-            connected: true,
-            remembered: false,
-            remember_enabled: true,
-            low: false,
-        };
+    fn action_icons_and_remember_hit_targets() {
+        let bt = sample_row("Bluetooth", true);
+        let usb = sample_row("USB", true);
         let font = ui::load_system_ui_font().unwrap();
-        let layout = PopupLayout::compute(&font, 1).unwrap();
-        let bounds = layout.rows[0].bounds;
-        let remember = layout.rows[0].remember;
-        let center = (remember.x + remember.w / 2.0, remember.y + remember.h / 2.0);
+
+        let bt_layout = PopupLayout::compute(&font, std::slice::from_ref(&bt)).unwrap();
+        let remember = bt_layout.rows[0].remember;
+        let identify = bt_layout.rows[0].identify.unwrap();
+        let power = bt_layout.rows[0].turn_off.unwrap();
+        let bounds = bt_layout.rows[0].bounds;
+
         assert_eq!(
-            action_at(std::slice::from_ref(&row), 0, &layout, center.0, center.1),
+            action_at(
+                std::slice::from_ref(&bt),
+                0,
+                &bt_layout,
+                remember.x + remember.w / 2.0,
+                remember.y + remember.h / 2.0
+            ),
             PopupAction::ToggleRemember("abc".into())
         );
         assert_eq!(
             action_at(
-                std::slice::from_ref(&row),
+                std::slice::from_ref(&bt),
                 0,
-                &layout,
+                &bt_layout,
+                power.x + power.w / 2.0,
+                power.y + power.h / 2.0
+            ),
+            PopupAction::PowerOff("abc".into())
+        );
+        assert_eq!(
+            action_at(
+                std::slice::from_ref(&bt),
+                0,
+                &bt_layout,
+                identify.x + identify.w / 2.0,
+                identify.y + identify.h / 2.0
+            ),
+            PopupAction::Identify("abc".into())
+        );
+        assert_eq!(
+            action_at(
+                std::slice::from_ref(&bt),
+                0,
+                &bt_layout,
                 bounds.x + 12.0,
                 bounds.y + 12.0
+            ),
+            PopupAction::None
+        );
+
+        let usb_layout = PopupLayout::compute(&font, std::slice::from_ref(&usb)).unwrap();
+        assert!(usb_layout.rows[0].identify.is_some());
+        assert!(usb_layout.rows[0].turn_off.is_none());
+        let usb_identify = usb_layout.rows[0].identify.unwrap();
+        assert_eq!(
+            action_at(
+                std::slice::from_ref(&usb),
+                0,
+                &usb_layout,
+                usb_identify.x + usb_identify.w / 2.0,
+                usb_identify.y + usb_identify.h / 2.0
             ),
             PopupAction::Identify("abc".into())
         );

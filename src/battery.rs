@@ -28,6 +28,16 @@ const CALIBRATION_FEATURE_SIZE: usize = 41;
 /// DualSense pairing-info feature report (Linux hid-playstation).
 const PAIRING_INFO_FEATURE_REPORT: u8 = 0x09;
 const PAIRING_INFO_FEATURE_SIZE: usize = 20;
+/// DualSense Bluetooth control feature report (dualsensectl / HID descriptor).
+/// Descriptor Report Count for ID 0x08 is 47 data bytes → 48 with report ID.
+const BT_CONTROL_FEATURE_REPORT: u8 = 0x08;
+const BT_CONTROL_FEATURE_SIZE: usize = 48;
+/// dualsensectl historically used 47; keep as a Windows fallback size.
+const BT_CONTROL_FEATURE_SIZE_ALT: usize = 47;
+const BT_CONTROL_FEATURE_SIZE_PADDED: usize = 64;
+const BT_CONTROL_OFF: u8 = 0x02;
+/// Feature-report CRC seeds: Linux hid-playstation uses 0xA3; dualsensectl uses 0x53.
+const FEATURE_CRC32_SEEDS: [u8; 2] = [0xA3, 0x53];
 
 const POWER_LEVEL_MASK: u8 = 0x0F;
 const POWER_STATE_SHIFT: u8 = 4;
@@ -375,6 +385,114 @@ fn request_full_bt_report(device: &HidDevice) -> Result<(), hidapi::HidError> {
     Ok(())
 }
 
+fn build_bt_control_off_report(size: usize, seed: u8) -> Vec<u8> {
+    let mut buf = vec![0u8; size];
+    buf[0] = BT_CONTROL_FEATURE_REPORT;
+    buf[1] = BT_CONTROL_OFF;
+    // CRC covers everything except the final 4 bytes (same family as output reports).
+    let payload_end = size.saturating_sub(4);
+    let mut data = Vec::with_capacity(payload_end + 1);
+    data.push(seed);
+    data.extend_from_slice(&buf[..payload_end]);
+    let crc = crc32fast::hash(&data);
+    buf[payload_end..].copy_from_slice(&crc.to_le_bytes());
+    buf
+}
+
+fn is_dualsense_device(d: &DeviceInfo) -> bool {
+    d.vendor_id() == SONY_VENDOR_ID
+        && matches!(
+            d.product_id(),
+            DUALSENSE_PRODUCT_ID | DUALSENSE_EDGE_PRODUCT_ID
+        )
+}
+
+/// Power off a DualSense over Bluetooth (feature report 0x08). USB pads are rejected.
+///
+/// Windows exposes DualSense as multiple HID interfaces; feature report 0x08 may not be
+/// on the Gamepad usage we use for battery. Try every Bluetooth DualSense interface and
+/// several report sizes/CRC seeds until SetFeature succeeds.
+pub fn power_off_bluetooth(serial: &str) -> Result<(), String> {
+    // Hold the lightbar lock for the whole open/write so we do not race identify/RGB.
+    with_lightbar_lock(|| power_off_bluetooth_unlocked(serial))
+}
+
+fn power_off_bluetooth_unlocked(serial: &str) -> Result<(), String> {
+    let api = HidApi::new().map_err(|e| e.to_string())?;
+    let target = normalize_identity(serial);
+
+    let mut matched: Vec<(String, HidDevice)> = Vec::new();
+    let mut unknown: Vec<(String, HidDevice)> = Vec::new();
+    for info in api.device_list().filter(|d| is_dualsense_device(d)) {
+        if !matches!(info.bus_type(), BusType::Bluetooth) {
+            continue;
+        }
+        let path = info.path().to_string_lossy().into_owned();
+        let device = match info.open_device(&api) {
+            Ok(d) => d,
+            Err(err) => {
+                app_log::warn(format!("power-off: open failed for {path}: {err}"));
+                continue;
+            }
+        };
+        let identity = resolve_device_identity(info, &device);
+        if identity == target {
+            matched.push((path, device));
+        } else if !is_known_serial(&identity) {
+            // Vendor/audio collections often lack a serial; try after exact matches.
+            unknown.push((path, device));
+        }
+    }
+
+    let mut candidates = matched;
+    if candidates.is_empty() {
+        candidates = unknown;
+    } else {
+        candidates.extend(unknown);
+    }
+
+    if candidates.is_empty() {
+        return Err(format!(
+            "Bluetooth controller {serial} not found (power-off is Bluetooth-only)"
+        ));
+    }
+
+    let sizes = [
+        BT_CONTROL_FEATURE_SIZE,
+        BT_CONTROL_FEATURE_SIZE_ALT,
+        BT_CONTROL_FEATURE_SIZE_PADDED,
+    ];
+    let mut errors = Vec::new();
+
+    for (path, device) in &candidates {
+        for &seed in &FEATURE_CRC32_SEEDS {
+            for &size in &sizes {
+                let report = build_bt_control_off_report(size, seed);
+                match device.send_feature_report(&report) {
+                    Ok(()) => {
+                        app_log::info(format!(
+                            "power-off sent for {serial} via {path} (size={size}, seed={seed:#04x})"
+                        ));
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        errors.push(format!("{path} size={size} seed={seed:#04x}: {err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "power-off feature report failed after {} attempt(s): {}",
+        errors.len(),
+        errors
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "no attempts".into())
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +568,34 @@ mod tests {
         assert_eq!(merged.len(), 2);
         let charging = merged.iter().find(|s| s.serial == "444648156926").unwrap();
         assert_eq!(charging.connection, "USB");
+    }
+
+    #[test]
+    fn bt_power_off_report_has_id_command_and_crc() {
+        let report = build_bt_control_off_report(BT_CONTROL_FEATURE_SIZE, 0xA3);
+        assert_eq!(report.len(), BT_CONTROL_FEATURE_SIZE);
+        assert_eq!(report[0], BT_CONTROL_FEATURE_REPORT);
+        assert_eq!(report[1], BT_CONTROL_OFF);
+        assert!(report[2..BT_CONTROL_FEATURE_SIZE - 4]
+            .iter()
+            .all(|&b| b == 0));
+        assert!(report[BT_CONTROL_FEATURE_SIZE - 4..]
+            .iter()
+            .any(|&b| b != 0));
+
+        let mut expected = vec![0u8; BT_CONTROL_FEATURE_SIZE];
+        expected[0] = BT_CONTROL_FEATURE_REPORT;
+        expected[1] = BT_CONTROL_OFF;
+        let mut data = Vec::with_capacity(BT_CONTROL_FEATURE_SIZE - 3);
+        data.push(0xA3);
+        data.extend_from_slice(&expected[..BT_CONTROL_FEATURE_SIZE - 4]);
+        let crc = crc32fast::hash(&data);
+        expected[BT_CONTROL_FEATURE_SIZE - 4..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(report, expected);
+
+        let alt = build_bt_control_off_report(BT_CONTROL_FEATURE_SIZE_ALT, 0x53);
+        assert_eq!(alt.len(), BT_CONTROL_FEATURE_SIZE_ALT);
+        assert_eq!(alt[0], BT_CONTROL_FEATURE_REPORT);
+        assert_eq!(alt[1], BT_CONTROL_OFF);
     }
 }

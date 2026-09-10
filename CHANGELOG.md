@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bluetooth **Turn off** action in the controller popup (HID feature report `0x08`).
+- SVG icons under `assets/icons/` for DualSense, Settings, Identify, and Power; rasterized with `resvg`.
+
+### Changed
+
+- Controller popup rows are status cards (battery rail + DualSense glyph) instead of clickable hover cards; Identify and Turn off are icon buttons.
+- Tray / `.exe` / header DualSense mark comes from SVG instead of hand-drawn pixel art.
+- Configure title bar uses SVG minimize/close icons; Remember checkboxes use the check SVG.
+- Bluetooth power-off tries every DualSense HID interface and multiple feature-report sizes/CRC seeds (Windows `HidD_SetFeature` is picky about collection and length).
+
 ## [0.1.12] - 2026-09-10
 
 ### Added

@@ -624,6 +624,33 @@ impl TrayApp {
         });
     }
 
+    fn power_off(&self, serial: &str) {
+        if is_emulated_serial(serial) {
+            app_log::info(format!("power-off skipped for emulated controller {serial}"));
+            return;
+        }
+
+        let Some(controller) = self.controllers.iter().find(|c| c.serial == serial) else {
+            return;
+        };
+        if controller.connection != "Bluetooth" {
+            app_log::warn(format!(
+                "power-off ignored for {serial} ({})",
+                controller.connection
+            ));
+            return;
+        }
+
+        let serial = serial.to_string();
+        thread::spawn(move || {
+            if let Err(err) = battery::power_off_bluetooth(&serial) {
+                app_log::warn(format!("power-off failed for {serial}: {err}"));
+            } else {
+                app_log::info(format!("power-off sent for {serial}"));
+            }
+        });
+    }
+
     fn set_notification(&mut self, setting: NotificationSetting, enabled: bool) {
         match setting {
             NotificationSetting::Connect => self.prefs.notify_connect = enabled,
@@ -709,6 +736,7 @@ impl TrayApp {
         match action {
             PopupAction::None => {}
             PopupAction::Identify(serial) => self.identify(&serial),
+            PopupAction::PowerOff(serial) => self.power_off(&serial),
             PopupAction::ToggleRemember(serial) => self.on_remember_menu(&serial),
             PopupAction::OpenSettings => {
                 if let Some(popup) = self.controller_popup.as_mut() {

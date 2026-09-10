@@ -5,6 +5,7 @@ use crate::color::{BatterySpectrum, Rgb, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::Preset;
 use crate::prefs::ToastPosition;
+use crate::svg_icon;
 use crate::ui::layout::{self, Rect};
 use crate::ui::{self, Framebuffer};
 use fontdue::Font;
@@ -1122,14 +1123,14 @@ impl ConfigureWindow {
         paint_title_button(
             fb,
             layout.minimize,
-            "—",
+            svg_icon::MINIMIZE_SVG,
             cursor.is_some_and(|(x, y)| layout.minimize.contains(x, y)),
             false,
         );
         paint_title_button(
             fb,
             layout.close,
-            "×",
+            svg_icon::CLOSE_SVG,
             cursor.is_some_and(|(x, y)| layout.close.contains(x, y)),
             true,
         );
@@ -1449,7 +1450,7 @@ fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, st
     }
 }
 
-fn paint_title_button(fb: &mut Framebuffer<'_>, rect: Rect, label: &str, hot: bool, danger: bool) {
+fn paint_title_button(fb: &mut Framebuffer<'_>, rect: Rect, svg: &str, hot: bool, danger: bool) {
     if hot {
         fb.fill_rect(
             rect.x,
@@ -1463,13 +1464,15 @@ fn paint_title_button(fb: &mut Framebuffer<'_>, rect: Rect, label: &str, hot: bo
             },
         );
     }
-    fb.text_in_rect(
-        rect,
-        label,
-        ui::INK,
-        18.0,
-        ui::HorizontalAlign::Center,
-        ui::VerticalAlign::Center,
+    let inset = 7.0;
+    let size = (rect.w.min(rect.h) - inset * 2.0).max(10.0);
+    let color = if hot { ui::INK } else { ui::MUTED };
+    fb.svg_icon(
+        rect.x + (rect.w - size) / 2.0,
+        rect.y + (rect.h - size) / 2.0,
+        size,
+        svg,
+        color,
     );
 }
 

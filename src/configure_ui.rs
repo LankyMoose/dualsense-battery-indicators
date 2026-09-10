@@ -37,8 +37,8 @@ const PICKER_H: f64 = 146.0;
 const RESET_H: f64 = 32.0;
 const SYSTEM_ROW_H: f64 = 32.0;
 const NOTIFICATION_ROW_H: f64 = 28.0;
-/// Matches the real toast window (`toast.rs` WIDTH / HEIGHT).
-const TOAST_ASPECT: f64 = 360.0 / 88.0;
+/// Representative toast aspect for the position diagram (max width / typical height).
+const TOAST_ASPECT: f64 = 360.0 / 60.0;
 const POSITION_TOAST_W: f64 = 56.0;
 const POSITION_TOAST_MARGIN: f64 = 8.0;
 const POSITION_STAGE_DARK: u32 = ui::rgb(15, 17, 22);
@@ -228,7 +228,7 @@ struct ConfigureLayout {
     notification_labels: [Rect; 4],
     notification_switches: [Rect; 4],
     position_stage: Rect,
-    position_choices: [Rect; 4],
+    position_choices: [Rect; 6],
     autostart_row: Rect,
     autostart_label: Rect,
     autostart_switch: Rect,
@@ -383,9 +383,16 @@ impl ConfigureLayout {
 
         let position_stage = position_stage_rect(position.content);
         let toast_h = POSITION_TOAST_W / TOAST_ASPECT;
+        let center_x = position_stage.x + (position_stage.w - POSITION_TOAST_W) / 2.0;
         let position_choices = [
             Rect::new(
                 position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.y + POSITION_TOAST_MARGIN,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                center_x,
                 position_stage.y + POSITION_TOAST_MARGIN,
                 POSITION_TOAST_W,
                 toast_h,
@@ -398,6 +405,12 @@ impl ConfigureLayout {
             ),
             Rect::new(
                 position_stage.x + POSITION_TOAST_MARGIN,
+                position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
+                POSITION_TOAST_W,
+                toast_h,
+            ),
+            Rect::new(
+                center_x,
                 position_stage.bottom() - POSITION_TOAST_MARGIN - toast_h,
                 POSITION_TOAST_W,
                 toast_h,
@@ -596,9 +609,11 @@ fn notification_index(setting: NotificationSetting) -> usize {
 fn position_index(position: ToastPosition) -> usize {
     match position {
         ToastPosition::TopLeft => 0,
-        ToastPosition::TopRight => 1,
-        ToastPosition::BottomLeft => 2,
-        ToastPosition::BottomRight => 3,
+        ToastPosition::TopCenter => 1,
+        ToastPosition::TopRight => 2,
+        ToastPosition::BottomLeft => 3,
+        ToastPosition::BottomCenter => 4,
+        ToastPosition::BottomRight => 5,
     }
 }
 
@@ -1299,11 +1314,13 @@ impl ConfigureWindow {
     }
 }
 
-fn positions() -> [ToastPosition; 4] {
+fn positions() -> [ToastPosition; 6] {
     [
         ToastPosition::TopLeft,
+        ToastPosition::TopCenter,
         ToastPosition::TopRight,
         ToastPosition::BottomLeft,
+        ToastPosition::BottomCenter,
         ToastPosition::BottomRight,
     ]
 }
@@ -1415,10 +1432,16 @@ fn paint_position_diagram(fb: &mut Framebuffer<'_>, layout: &ConfigureLayout, st
             Some(if selected { ui::INK } else { ui::LINE }),
         );
         if selected || hot {
-            let rail_w = (hit.h * 0.35).clamp(2.0, 4.0);
+            let rail_w = 2.0;
+            let rail_inset = 2.0;
             fb.round_rect(
-                (hit.x, hit.y, rail_w, hit.h),
-                radius.min(rail_w / 2.0),
+                (
+                    hit.x,
+                    hit.y + rail_inset,
+                    rail_w,
+                    (hit.h - rail_inset * 2.0).max(0.0),
+                ),
+                rail_w / 2.0,
                 if selected { ui::INK } else { ui::MUTED },
                 None,
             );

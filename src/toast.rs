@@ -11,7 +11,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Duration;
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, LengthPercentage, Size, Style,
+    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentage, Size, Style,
 };
 use winit::dpi::LogicalSize;
 #[cfg(not(windows))]
@@ -26,8 +26,13 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 #[cfg(windows)]
 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
 
-const WIDTH: f64 = 360.0;
-const HEIGHT: f64 = 88.0;
+const MAX_WIDTH: f64 = 360.0;
+const PAD: f64 = layout::SPACE_3;
+const RAIL_W: f64 = 3.0;
+const ICON_SIZE: f64 = 36.0;
+const HEADING_SIZE: f32 = 13.0;
+const BODY_SIZE: f32 = 12.0;
+const TEXT_GAP: f64 = layout::SPACE_1;
 pub const SLIDE_DURATION: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone)]
 pub struct ToastMessage {
@@ -75,16 +80,25 @@ struct ToastLayout {
 
 impl ToastLayout {
     fn compute(font: &Font, message: &ToastMessage) -> Result<Self, String> {
+        let heading_w = text_advance(font, &message.heading, HEADING_SIZE);
+        let body_w = text_advance(font, &message.body, BODY_SIZE);
+        let text_w = heading_w.max(body_w);
+        let width = (RAIL_W + PAD + ICON_SIZE + layout::SPACE_2 + text_w + PAD)
+            .clamp(RAIL_W + PAD + ICON_SIZE + layout::SPACE_2 + PAD, MAX_WIDTH);
+
         let mut tree = LayoutTree::new();
-        let rail = tree.leaf(toast_fixed(Some(5.0), Some(HEIGHT), 0.0))?;
-        let icon = tree.leaf(toast_fixed(Some(52.0), Some(52.0), 0.0))?;
-        let heading = tree.text(&message.heading, 15.0, toast_flexible_text(Some(20.0)))?;
-        let body = tree.text(&message.body, 13.0, toast_flexible_text(Some(18.0)))?;
+        let rail = tree.leaf(toast_fixed(Some(RAIL_W), None, 0.0))?;
+        let icon = tree.leaf(toast_fixed(Some(ICON_SIZE), Some(ICON_SIZE), 0.0))?;
+        let heading = tree.text(&message.heading, HEADING_SIZE, toast_text_fill())?;
+        let body = tree.text(&message.body, BODY_SIZE, toast_text_fill())?;
         let text = tree.container(
             Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                justify_content: Some(JustifyContent::CENTER),
                 gap: Size {
                     width: LengthPercentage::length(0.0),
-                    height: LengthPercentage::length(7.0),
+                    height: LengthPercentage::length(TEXT_GAP as f32),
                 },
                 flex_grow: 1.0,
                 flex_basis: Dimension::length(0.0),
@@ -92,45 +106,44 @@ impl ToastLayout {
                     width: Dimension::length(0.0),
                     height: Dimension::auto(),
                 },
-                ..toast_column(None)
+                ..Default::default()
             },
             &[heading, body],
         )?;
         let content = tree.container(
             Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::CENTER),
                 flex_grow: 1.0,
-                flex_shrink: 1.0,
                 flex_basis: Dimension::length(0.0),
                 min_size: Size {
                     width: Dimension::length(0.0),
                     height: Dimension::auto(),
                 },
-                align_items: Some(AlignItems::CENTER),
-                padding: taffy::geometry::Rect {
-                    left: LengthPercentage::length(13.0),
-                    right: LengthPercentage::length(18.0),
-                    top: LengthPercentage::length(18.0),
-                    bottom: LengthPercentage::length(18.0),
-                },
+                padding: layout::points(PAD),
                 gap: Size {
-                    width: LengthPercentage::length(14.0),
+                    width: LengthPercentage::length(layout::SPACE_2 as f32),
                     height: LengthPercentage::length(0.0),
                 },
-                ..toast_row(Some(HEIGHT))
+                ..Default::default()
             },
             &[icon, text],
         )?;
         let root = tree.container(
             Style {
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: Some(AlignItems::STRETCH),
                 size: Size {
-                    width: Dimension::length(WIDTH as f32),
-                    height: Dimension::length(HEIGHT as f32),
+                    width: Dimension::length(width as f32),
+                    height: Dimension::auto(),
                 },
-                ..toast_row(Some(HEIGHT))
+                ..Default::default()
             },
             &[rail, content],
         )?;
-        tree.compute(root, WIDTH, Some(HEIGHT), font)?;
+        tree.compute(root, width, None, font)?;
         Ok(Self {
             root: tree.rect(root)?,
             rail: tree.rect(rail)?,
@@ -139,6 +152,12 @@ impl ToastLayout {
             body: tree.rect(body)?,
         })
     }
+}
+
+fn text_advance(font: &Font, text: &str, size: f32) -> f64 {
+    text.chars()
+        .map(|character| font.metrics(character, size).advance_width as f64)
+        .sum()
 }
 
 fn toast_fixed(width: Option<f64>, height: Option<f64>, grow: f32) -> Style {
@@ -153,35 +172,18 @@ fn toast_fixed(width: Option<f64>, height: Option<f64>, grow: f32) -> Style {
     }
 }
 
-fn toast_flexible_text(height: Option<f64>) -> Style {
+fn toast_text_fill() -> Style {
     Style {
         size: Size {
             width: Dimension::percent(1.0),
-            height: height.map_or(Dimension::auto(), |value| Dimension::length(value as f32)),
+            height: Dimension::auto(),
         },
         min_size: Size {
             width: Dimension::length(0.0),
             height: Dimension::auto(),
         },
-        flex_grow: 1.0,
         flex_shrink: 1.0,
         ..Default::default()
-    }
-}
-
-fn toast_row(height: Option<f64>) -> Style {
-    Style {
-        display: Display::Flex,
-        flex_direction: FlexDirection::Row,
-        ..toast_fixed(None, height, 0.0)
-    }
-}
-
-fn toast_column(height: Option<f64>) -> Style {
-    Style {
-        display: Display::Flex,
-        flex_direction: FlexDirection::Column,
-        ..toast_fixed(None, height, 0.0)
     }
 }
 
@@ -189,7 +191,7 @@ impl ToastWindow {
     pub fn open(event_loop: &ActiveEventLoop, display: OwnedDisplayHandle) -> Result<Self, String> {
         let attrs = WindowAttributes::default()
             .with_title("DualSense notification")
-            .with_inner_size(LogicalSize::new(WIDTH, HEIGHT))
+            .with_inner_size(LogicalSize::new(MAX_WIDTH, ICON_SIZE + PAD * 2.0))
             .with_resizable(false)
             .with_decorations(false)
             .with_visible(false)
@@ -249,7 +251,7 @@ impl ToastWindow {
             .layout
             .as_ref()
             .map(|layout| (layout.root.w, layout.root.h))
-            .unwrap_or((WIDTH, HEIGHT));
+            .unwrap_or((MAX_WIDTH, ICON_SIZE + PAD * 2.0));
         let (placement, width, height) = scaled_placement(target, logical_size, position);
         self.placement = Some(placement);
         let x = placement.x;
@@ -361,12 +363,18 @@ impl ToastWindow {
         );
 
         fb.clear(ui::BG);
-        fb.fill_rect(
+        let rail_inset = layout::SPACE_1;
+        let rail = Rect::new(
             layout.rail.x,
-            layout.rail.y,
+            layout.rail.y + rail_inset,
             layout.rail.w,
-            layout.rail.h,
+            (layout.rail.h - rail_inset * 2.0).max(0.0),
+        );
+        fb.round_rect(
+            (rail.x, rail.y, rail.w, rail.h),
+            (rail.w / 2.0).max(1.0),
             ui::rgb_of(accent),
+            None,
         );
         fb.icon(
             layout.icon.x,
@@ -378,7 +386,7 @@ impl ToastWindow {
             layout.heading,
             &heading,
             ui::INK,
-            15.0,
+            HEADING_SIZE,
             ui::HorizontalAlign::Left,
             ui::VerticalAlign::Center,
         );
@@ -386,7 +394,7 @@ impl ToastWindow {
             layout.body,
             &body,
             ui::MUTED,
-            13.0,
+            BODY_SIZE,
             ui::HorizontalAlign::Left,
             ui::VerticalAlign::Center,
         );
@@ -426,8 +434,10 @@ fn scaled_placement(
     let margin = (layout::SPACE_5 * scale).round() as i32;
     let (x, target_y) = corner_position(target.rect, width, height, position, margin);
     let outside_y = match position {
-        ToastPosition::TopLeft | ToastPosition::TopRight => target.rect.y - height as i32,
-        ToastPosition::BottomLeft | ToastPosition::BottomRight => {
+        ToastPosition::TopLeft | ToastPosition::TopCenter | ToastPosition::TopRight => {
+            target.rect.y - height as i32
+        }
+        ToastPosition::BottomLeft | ToastPosition::BottomCenter | ToastPosition::BottomRight => {
             target.rect.y + target.rect.height as i32
         }
     };
@@ -459,19 +469,22 @@ fn corner_position(
 ) -> (i32, i32) {
     let left = area.x + margin;
     let right = area.x + area.width as i32 - width as i32 - margin;
+    let center = area.x + (area.width as i32 - width as i32) / 2;
     let top = area.y + margin;
     let bottom = area.y + area.height as i32 - height as i32 - margin;
     match position {
         ToastPosition::TopLeft => (left, top),
+        ToastPosition::TopCenter => (center, top),
         ToastPosition::TopRight => (right, top),
         ToastPosition::BottomLeft => (left, bottom),
+        ToastPosition::BottomCenter => (center, bottom),
         ToastPosition::BottomRight => (right, bottom),
     }
 }
 
 #[cfg(not(windows))]
 fn target_area(window: &Window) -> TargetArea {
-    let monitor = window.current_monitor();
+    let monitor = window.primary_monitor();
     match monitor {
         Some(monitor) => {
             let position = monitor.position();
@@ -500,8 +513,12 @@ fn target_area(window: &Window) -> TargetArea {
 
 #[cfg(windows)]
 fn target_area(_window: &Window) -> TargetArea {
-    let foreground = unsafe { GetForegroundWindow() };
-    let monitor = unsafe { MonitorFromWindow(foreground, MONITOR_DEFAULTTOPRIMARY) };
+    let monitor = unsafe {
+        MonitorFromPoint(
+            WinPoint { x: 0, y: 0 },
+            MONITOR_DEFAULTTOPRIMARY,
+        )
+    };
     let mut info = MonitorInfo {
         size: std::mem::size_of::<MonitorInfo>() as u32,
         monitor: WinRect::default(),
@@ -521,6 +538,7 @@ fn target_area(_window: &Window) -> TargetArea {
         };
     }
 
+    let foreground = unsafe { GetForegroundWindow() };
     let mut foreground_rect = WinRect::default();
     let got_foreground =
         foreground != 0 && unsafe { GetWindowRect(foreground, &mut foreground_rect) } != 0;
@@ -530,11 +548,7 @@ fn target_area(_window: &Window) -> TargetArea {
         && foreground_rect.right >= info.monitor.right - 2
         && foreground_rect.bottom >= info.monitor.bottom - 2;
     let area = if fullscreen { info.monitor } else { info.work };
-    let dpi = if foreground != 0 {
-        unsafe { GetDpiForWindow(foreground) }
-    } else {
-        96
-    };
+    let dpi = primary_monitor_dpi(monitor);
     TargetArea {
         rect: ScreenRect {
             x: area.left,
@@ -543,6 +557,18 @@ fn target_area(_window: &Window) -> TargetArea {
             height: (area.bottom - area.top).max(1) as u32,
         },
         scale: dpi.max(96) as f64 / 96.0,
+    }
+}
+
+#[cfg(windows)]
+fn primary_monitor_dpi(monitor: isize) -> u32 {
+    let mut dpi_x = 0u32;
+    let mut dpi_y = 0u32;
+    let result = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    if result == 0 && dpi_x > 0 {
+        dpi_x
+    } else {
+        96
     }
 }
 
@@ -725,10 +751,9 @@ struct WinMessage {
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetForegroundWindow() -> isize;
-    fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
+    fn MonitorFromPoint(point: WinPoint, flags: u32) -> isize;
     fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
     fn GetWindowRect(hwnd: isize, rect: *mut WinRect) -> i32;
-    fn GetDpiForWindow(hwnd: isize) -> u32;
     fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
     fn SetWindowLongPtrW(hwnd: isize, index: i32, value: isize) -> isize;
     fn SetWindowPos(
@@ -747,7 +772,15 @@ unsafe extern "system" {
 }
 
 #[cfg(windows)]
+#[link(name = "shcore")]
+unsafe extern "system" {
+    fn GetDpiForMonitor(monitor: isize, dpi_type: u32, dpi_x: *mut u32, dpi_y: *mut u32) -> i32;
+}
+
+#[cfg(windows)]
 const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
+#[cfg(windows)]
+const MDT_EFFECTIVE_DPI: u32 = 0;
 #[cfg(windows)]
 const GWL_EXSTYLE: i32 = -20;
 #[cfg(windows)]
@@ -794,6 +827,10 @@ mod tests {
             (-1900, 20)
         );
         assert_eq!(
+            corner_position(area, 360, 88, ToastPosition::TopCenter, 20),
+            (-1140, 20)
+        );
+        assert_eq!(
             corner_position(area, 360, 88, ToastPosition::TopRight, 20),
             (-380, 20)
         );
@@ -802,9 +839,43 @@ mod tests {
             (-1900, 972)
         );
         assert_eq!(
+            corner_position(area, 360, 88, ToastPosition::BottomCenter, 20),
+            (-1140, 972)
+        );
+        assert_eq!(
             corner_position(area, 360, 88, ToastPosition::BottomRight, 20),
             (-380, 972)
         );
+    }
+
+    #[test]
+    fn toast_layout_hugs_content_size() {
+        let font = ui::load_system_ui_font().unwrap();
+        let short = ToastLayout::compute(
+            &font,
+            &ToastMessage {
+                heading: "Pad".into(),
+                body: "low".into(),
+                accent: Rgb::new(65, 65, 251),
+            },
+        )
+        .unwrap();
+        let long = ToastLayout::compute(
+            &font,
+            &ToastMessage {
+                heading: "DualSense Wireless Controller (Bluetooth)".into(),
+                body: "connected — 100%".into(),
+                accent: Rgb::new(65, 65, 251),
+            },
+        )
+        .unwrap();
+        assert!(short.root.w < long.root.w);
+        assert!(short.root.w < MAX_WIDTH);
+        assert!(long.root.w <= MAX_WIDTH + 0.5);
+        // Height is content-driven (icon + uniform padding), same for both.
+        let expected_h = ICON_SIZE + PAD * 2.0;
+        assert!((short.root.h - expected_h).abs() < 1.0, "short {:?}", short.root);
+        assert!((long.root.h - expected_h).abs() < 1.0, "long {:?}", long.root);
     }
 
     #[test]
@@ -816,15 +887,16 @@ mod tests {
             accent: Rgb::new(65, 65, 251),
         };
         let layout = ToastLayout::compute(&font, &message).unwrap();
+        assert!(layout.root.w <= MAX_WIDTH + 0.5);
         for rect in [layout.rail, layout.icon, layout.heading, layout.body] {
             assert!(rect.x >= layout.root.x);
             assert!(rect.y >= layout.root.y);
             assert!(
-                rect.right() <= layout.root.right(),
+                rect.right() <= layout.root.right() + 0.5,
                 "{rect:?} exceeds {:?}",
                 layout.root
             );
-            assert!(rect.bottom() <= layout.root.bottom());
+            assert!(rect.bottom() <= layout.root.bottom() + 0.5);
         }
     }
 
@@ -840,13 +912,13 @@ mod tests {
             scale: 1.5,
         };
         let (placement, width, height) =
-            scaled_placement(target, (WIDTH, HEIGHT), ToastPosition::TopRight);
-        assert_eq!((width, height), (540, 132));
+            scaled_placement(target, (240.0, ICON_SIZE + PAD * 2.0), ToastPosition::TopRight);
+        assert_eq!((width, height), (360, 90));
         assert_eq!(
             placement,
             ToastPlacement {
-                x: 1350,
-                outside_y: -132,
+                x: 1530,
+                outside_y: -90,
                 target_y: 30,
             }
         );

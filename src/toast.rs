@@ -513,12 +513,7 @@ fn target_area(window: &Window) -> TargetArea {
 
 #[cfg(windows)]
 fn target_area(_window: &Window) -> TargetArea {
-    let monitor = unsafe {
-        MonitorFromPoint(
-            WinPoint { x: 0, y: 0 },
-            MONITOR_DEFAULTTOPRIMARY,
-        )
-    };
+    let monitor = unsafe { MonitorFromPoint(WinPoint { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
     let mut info = MonitorInfo {
         size: std::mem::size_of::<MonitorInfo>() as u32,
         monitor: WinRect::default(),
@@ -565,11 +560,7 @@ fn primary_monitor_dpi(monitor: isize) -> u32 {
     let mut dpi_x = 0u32;
     let mut dpi_y = 0u32;
     let result = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
-    if result == 0 && dpi_x > 0 {
-        dpi_x
-    } else {
-        96
-    }
+    if result == 0 && dpi_x > 0 { dpi_x } else { 96 }
 }
 
 #[cfg(windows)]
@@ -874,8 +865,16 @@ mod tests {
         assert!(long.root.w <= MAX_WIDTH + 0.5);
         // Height is content-driven (icon + uniform padding), same for both.
         let expected_h = ICON_SIZE + PAD * 2.0;
-        assert!((short.root.h - expected_h).abs() < 1.0, "short {:?}", short.root);
-        assert!((long.root.h - expected_h).abs() < 1.0, "long {:?}", long.root);
+        assert!(
+            (short.root.h - expected_h).abs() < 1.0,
+            "short {:?}",
+            short.root
+        );
+        assert!(
+            (long.root.h - expected_h).abs() < 1.0,
+            "long {:?}",
+            long.root
+        );
     }
 
     #[test]
@@ -911,8 +910,11 @@ mod tests {
             },
             scale: 1.5,
         };
-        let (placement, width, height) =
-            scaled_placement(target, (240.0, ICON_SIZE + PAD * 2.0), ToastPosition::TopRight);
+        let (placement, width, height) = scaled_placement(
+            target,
+            (240.0, ICON_SIZE + PAD * 2.0),
+            ToastPosition::TopRight,
+        );
         assert_eq!((width, height), (360, 90));
         assert_eq!(
             placement,

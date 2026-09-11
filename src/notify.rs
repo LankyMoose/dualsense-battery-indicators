@@ -300,7 +300,11 @@ mod tests {
         let events = tracker.collect_events(&mid, &at_threshold, &p);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].1, NotifyKind::Low);
-        assert!(tracker.collect_events(&at_threshold, &at_threshold, &p).is_empty());
+        assert!(
+            tracker
+                .collect_events(&at_threshold, &at_threshold, &p)
+                .is_empty()
+        );
     }
 
     #[test]

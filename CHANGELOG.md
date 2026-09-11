@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-09-11
+
 ### Added
 
 - Controller nicknames: pencil edit icon after each name in the controllers popup; names persist in `controllers.json` independently of Remember and appear in toast headings.
@@ -152,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.14]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.10...v0.1.11

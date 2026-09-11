@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-09-11
+
 ### Added
 
 - Configurable low-battery threshold (5–50%, default 5%) in Configure → Notifications; shared by the low-battery toast, orange lightbar pulse, and popup “low battery” label.
@@ -164,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[0.1.15]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.11...v0.1.12

@@ -52,13 +52,14 @@ impl ControllerRow {
         remembered: bool,
         remember_enabled: bool,
         nickname: Option<String>,
+        low_battery_percent: u8,
     ) -> Self {
         Self {
             serial: controller.serial.clone(),
             product: controller.product.to_string(),
             nickname,
             connection: controller.connection.to_string(),
-            state: if controller.is_low_battery() {
+            state: if controller.is_low_battery(low_battery_percent) {
                 "low battery".to_string()
             } else {
                 controller.state.as_str().to_string()
@@ -67,7 +68,7 @@ impl ControllerRow {
             connected: true,
             remembered,
             remember_enabled,
-            low: controller.is_low_battery(),
+            low: controller.is_low_battery(low_battery_percent),
         }
     }
 

@@ -2,10 +2,15 @@
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
+use crate::battery::LOW_BATTERY_PERCENT;
 use crate::color::BatterySpectrum;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+/// Inclusive bounds for the low-battery threshold slider (DualSense mid-points).
+pub const LOW_BATTERY_PERCENT_MIN: u8 = 5;
+pub const LOW_BATTERY_PERCENT_MAX: u8 = 50;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +34,8 @@ pub struct Prefs {
     pub notify_connect: bool,
     #[serde(default = "default_true")]
     pub notify_disconnect: bool,
+    #[serde(default = "default_low_battery_percent")]
+    pub low_battery_percent: u8,
     #[serde(default)]
     pub toast_position: ToastPosition,
     #[serde(default)]
@@ -39,6 +46,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_low_battery_percent() -> u8 {
+    LOW_BATTERY_PERCENT
+}
+
+pub fn clamp_low_battery_percent(value: u8) -> u8 {
+    value.clamp(LOW_BATTERY_PERCENT_MIN, LOW_BATTERY_PERCENT_MAX)
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -46,6 +61,7 @@ impl Default for Prefs {
             notify_charged: true,
             notify_connect: true,
             notify_disconnect: true,
+            low_battery_percent: LOW_BATTERY_PERCENT,
             toast_position: ToastPosition::default(),
             spectrum: BatterySpectrum::default_spectrum(),
         }
@@ -59,7 +75,10 @@ impl Prefs {
             return Self::default();
         };
         match serde_json::from_slice::<Prefs>(&bytes) {
-            Ok(prefs) => prefs,
+            Ok(mut prefs) => {
+                prefs.low_battery_percent = clamp_low_battery_percent(prefs.low_battery_percent);
+                prefs
+            }
             Err(err) => {
                 app_log::warn(format!(
                     "failed to parse prefs at {}: {err}; using defaults",
@@ -136,6 +155,16 @@ mod tests {
         .unwrap();
         assert_eq!(prefs.toast_position, ToastPosition::BottomCenter);
         assert!(prefs.notify_disconnect);
+        assert_eq!(prefs.low_battery_percent, LOW_BATTERY_PERCENT);
+    }
+
+    #[test]
+    fn clamp_low_battery_percent_bounds() {
+        assert_eq!(clamp_low_battery_percent(0), LOW_BATTERY_PERCENT_MIN);
+        assert_eq!(clamp_low_battery_percent(5), 5);
+        assert_eq!(clamp_low_battery_percent(25), 25);
+        assert_eq!(clamp_low_battery_percent(50), LOW_BATTERY_PERCENT_MAX);
+        assert_eq!(clamp_low_battery_percent(99), LOW_BATTERY_PERCENT_MAX);
     }
 
     #[test]

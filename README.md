@@ -12,12 +12,12 @@ System tray app that shows connected DualSense controller battery levels, colors
 - **Remember** a controller to keep it in the popup after disconnect with its last-known charge % (off by default)
 - Assign a **nickname** to any pad with a known serial; nicknames survive forgetting a pad and are used in the popup and overlay toasts
 - Bluetooth **Turn off** sends the DualSense soft power-off command (same idea as holding the PS button)
-- Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (≤5% discharging), or **finishes charging** (tray → **Settings**; on by default)
+- Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (at or below a configurable % while discharging; default ≤5%), or **finishes charging** (tray → **Settings**; on by default)
 - Toasts appear in any configurable screen corner as always-on-top cards and dismiss on click or automatically after five seconds
-- Dark **iced** Configure window for notification, toast-position, autostart, and lightbar settings
+- Dark **iced** Configure window for notification (including low-battery %), toast-position, autostart, and lightbar settings
 - Detects controllers connecting/disconnecting within a few seconds
 - Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** inside a single-open accordion. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
-- At **≤5% while discharging**, the lightbar periodically pulses **orange**
+- At **low battery while discharging** (same configurable threshold as the toast; default ≤5%), the lightbar periodically pulses **orange**
 - Icons live in `assets/icons/` (SVG) and are rasterized at build/runtime
 - UI shell is an **iced** daemon (tray via `tray-icon`); Configure, controller popup, and toasts are iced windows
 - Single-instance (second launch exits quietly)
@@ -71,7 +71,7 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense SVG icon (rasterized at build time via `winres`).
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
-- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/position + lightbar spectrum)
+- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/threshold/position + lightbar spectrum)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json` (remembered pads + nicknames)
 - Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
 - Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.

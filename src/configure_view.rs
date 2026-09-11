@@ -31,7 +31,7 @@ const HIT_RADIUS: f32 = 12.0;
 const STOP_REMOVE_DISTANCE: f32 = 28.0;
 const ICON_SIZE: f32 = 16.0;
 /// Representative toast aspect for the position diagram (max width / typical height).
-const TOAST_ASPECT: f32 = 360.0 / 60.0;
+const TOAST_ASPECT: f32 = crate::toast_view::WIDTH / crate::toast_view::HEIGHT;
 const POSITION_TOAST_W: f32 = 56.0;
 const POSITION_TOAST_MARGIN: f32 = 8.0;
 

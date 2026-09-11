@@ -924,7 +924,7 @@ impl App {
     fn show_position_preview(&mut self) -> Task<Message> {
         self.toast_queue.clear();
         self.toast_queue
-            .push_back(ToastMessage::preview(self.prefs.spectrum.accent()));
+            .push_back(ToastMessage::preview(&self.prefs.spectrum));
         let finish = self.finish_toast();
         finish.chain(self.show_next_toast())
     }

@@ -131,17 +131,17 @@ fn format_event(
     match kind {
         NotifyKind::Connect => NotifyEvent {
             heading,
-            body: format!("Connected — {}%", controller.percent),
+            body: "Connected".to_string(),
             percent: Some(controller.percent),
         },
         NotifyKind::Disconnect => NotifyEvent {
             heading,
-            body: format!("Disconnected — {}%", controller.percent),
+            body: "Disconnected".to_string(),
             percent: Some(controller.percent),
         },
         NotifyKind::Low => NotifyEvent {
             heading,
-            body: format!("Is low — {}%", controller.percent),
+            body: "Is low".to_string(),
             percent: Some(controller.percent),
         },
         NotifyKind::Charged => NotifyEvent {
@@ -220,7 +220,7 @@ mod tests {
         let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
         let events = tracker.evaluate(&connected, &[], &prefs(true, true, false), |_| None);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].body, "Disconnected — 40%");
+        assert_eq!(events[0].body, "Disconnected");
         assert_eq!(events[0].percent, Some(40));
         assert_eq!(events[0].heading, "DualSense (Bluetooth)");
     }

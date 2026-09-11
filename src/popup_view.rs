@@ -222,12 +222,7 @@ fn controller_row<'a>(
 ) -> Element<'a, PopupMessage> {
     let accent = theme::from_rgb(spectrum.color_at_percent(entry.percent));
     let ring_color = if entry.connected { accent } else { theme::DIM };
-    let ring = percent_ring::percent_ring(
-        entry.percent,
-        ring_color,
-        POPUP_SIZE,
-        entry.eta.clone(),
-    );
+    let ring = percent_ring::percent_ring(entry.percent, ring_color, POPUP_SIZE, entry.eta.clone());
 
     let name: Element<'_, PopupMessage> = if state.is_editing(&entry.serial) {
         text_input("Nickname", &state.draft)

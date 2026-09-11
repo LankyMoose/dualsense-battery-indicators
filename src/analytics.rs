@@ -329,8 +329,7 @@ impl AnalyticsStore {
             if abandoned {
                 record.open = None;
                 self.dirty = true;
-            } else if open.kind == SessionKind::PausedDischarge
-                && next.percent > open.last_percent
+            } else if open.kind == SessionKind::PausedDischarge && next.percent > open.last_percent
             {
                 // Charged while away.
                 record.open = None;
@@ -370,7 +369,10 @@ impl AnalyticsStore {
 
         // State transitions.
         match (prev_state, next.state) {
-            (Some(PowerState::Discharging) | Some(PowerState::Unknown) | None, PowerState::Charging) => {
+            (
+                Some(PowerState::Discharging) | Some(PowerState::Unknown) | None,
+                PowerState::Charging,
+            ) => {
                 // Finish open play if any, then begin charge.
                 if matches!(
                     self.open_kind(serial),
@@ -403,8 +405,10 @@ impl AnalyticsStore {
         }
 
         // Empty-bucket finish while discharging from full.
-        if matches!(self.open_kind(serial), Some(SessionKind::DischargingFromFull))
-            && next.state.is_discharging()
+        if matches!(
+            self.open_kind(serial),
+            Some(SessionKind::DischargingFromFull)
+        ) && next.state.is_discharging()
             && next.percent <= PLAY_EMPTY_PERCENT
             && prev_percent.is_some_and(|p| p > PLAY_EMPTY_PERCENT)
         {
@@ -516,8 +520,7 @@ impl AnalyticsStore {
         }
         let secs = open.active_ms / 1000;
         if open.start_percent <= CHARGE_START_MAX_PERCENT
-            && secs >= MIN_CHARGE_SECS
-            && secs <= MAX_CHARGE_SECS
+            && (MIN_CHARGE_SECS..=MAX_CHARGE_SECS).contains(&secs)
         {
             push_sample(&mut record.charge_samples_ms, open.active_ms);
         }
@@ -597,8 +600,7 @@ impl AnalyticsStore {
         let empty_finish = end_percent <= PLAY_EMPTY_PERCENT;
         let secs = open.active_ms / 1000;
         if (used >= PLAY_MIN_PERCENT_USED || empty_finish)
-            && secs >= MIN_PLAY_SECS
-            && secs <= MAX_PLAY_SECS
+            && (MIN_PLAY_SECS..=MAX_PLAY_SECS).contains(&secs)
             && used > 0
         {
             // Scale to a full 0–100% drain estimate.
@@ -608,7 +610,7 @@ impl AnalyticsStore {
                 .checked_div(u64::from(used))
                 .unwrap_or(open.active_ms);
             let scaled_secs = scaled / 1000;
-            if scaled_secs >= MIN_PLAY_SECS && scaled_secs <= MAX_PLAY_SECS {
+            if (MIN_PLAY_SECS..=MAX_PLAY_SECS).contains(&scaled_secs) {
                 push_sample(&mut record.play_samples_ms, scaled);
             }
         }
@@ -766,7 +768,7 @@ fn median_ms(samples: &[u64]) -> Option<u64> {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         Some((sorted[mid - 1] + sorted[mid]) / 2)
     } else {
         Some(sorted[mid])
@@ -856,7 +858,12 @@ mod tests {
             observe_enabled(&mut store, &charging, &charging, ms(1_060 + i * 90));
         }
         let last = ms(1_060 + 40 * 90);
-        observe_enabled(&mut store, &charging, &complete, last + Duration::from_secs(90));
+        observe_enabled(
+            &mut store,
+            &charging,
+            &complete,
+            last + Duration::from_secs(90),
+        );
 
         let typical = store.typical_charge("a").expect("charge sample");
         assert!(typical.as_secs() >= MIN_CHARGE_SECS);
@@ -875,12 +882,7 @@ mod tests {
         for i in 1..=20 {
             observe_enabled(&mut store, &charging, &charging, ms(1_060 + i * 90));
         }
-        observe_enabled(
-            &mut store,
-            &charging,
-            &complete,
-            ms(1_060 + 21 * 90),
-        );
+        observe_enabled(&mut store, &charging, &complete, ms(1_060 + 21 * 90));
         assert!(store.typical_charge("a").is_none());
     }
 
@@ -896,15 +898,9 @@ mod tests {
         observe_enabled(&mut store, &full, &unplugged, ms(1_060));
         // ~2 hours active drain.
         for i in 1..=80 {
-            let pct = if i < 40 { 100 } else { 40 };
+            let pct = if i <= 40 { 100 } else { 40 };
             let state = vec![pad("a", pct, PowerState::Discharging)];
-            let prev_pct = if i == 1 {
-                100
-            } else if i <= 40 {
-                100
-            } else {
-                40
-            };
+            let prev_pct = if i <= 40 { 100 } else { 40 };
             let prev = vec![pad("a", prev_pct, PowerState::Discharging)];
             // First transition to 40% at i==40
             let current = if i == 40 { mid.clone() } else { state };
@@ -915,12 +911,7 @@ mod tests {
             } else {
                 prev
             };
-            observe_enabled(
-                &mut store,
-                &previous,
-                &current,
-                ms(1_060 + i * 90),
-            );
+            observe_enabled(&mut store, &previous, &current, ms(1_060 + i * 90));
         }
         let end = ms(1_060 + 80 * 90);
         observe_enabled(&mut store, &mid, &charging, end + Duration::from_secs(90));
@@ -944,21 +935,11 @@ mod tests {
         for i in 1..=30 {
             observe_enabled(&mut store, &unplugged, &unplugged, ms(1_060 + i * 90));
         }
-        observe_enabled(
-            &mut store,
-            &unplugged,
-            &ninety,
-            ms(1_060 + 31 * 90),
-        );
+        observe_enabled(&mut store, &unplugged, &ninety, ms(1_060 + 31 * 90));
         for i in 32..=50 {
             observe_enabled(&mut store, &ninety, &ninety, ms(1_060 + i * 90));
         }
-        observe_enabled(
-            &mut store,
-            &ninety,
-            &charging,
-            ms(1_060 + 51 * 90),
-        );
+        observe_enabled(&mut store, &ninety, &charging, ms(1_060 + 51 * 90));
         assert!(store.typical_play("a").is_none());
     }
 
@@ -996,17 +977,32 @@ mod tests {
         );
         // Sitting 2.
         for i in 1..=20 {
-            observe_enabled(&mut store, &eighty, &eighty, day2 + Duration::from_secs(i * 90));
+            observe_enabled(
+                &mut store,
+                &eighty,
+                &eighty,
+                day2 + Duration::from_secs(i * 90),
+            );
         }
         let after_sit2 = day2 + Duration::from_secs(21 * 90);
         observe_enabled(&mut store, &eighty, &sixty, after_sit2);
-        observe_enabled(&mut store, &sixty, &[], after_sit2 + Duration::from_secs(90));
+        observe_enabled(
+            &mut store,
+            &sixty,
+            &[],
+            after_sit2 + Duration::from_secs(90),
+        );
 
         // Sitting 3 to empty.
         let day3 = after_sit2 + Duration::from_secs(90 + 20 * 60 * 60);
         observe_enabled(&mut store, &[], &sixty, day3);
         for i in 1..=25 {
-            observe_enabled(&mut store, &sixty, &sixty, day3 + Duration::from_secs(i * 90));
+            observe_enabled(
+                &mut store,
+                &sixty,
+                &sixty,
+                day3 + Duration::from_secs(i * 90),
+            );
         }
         let end = day3 + Duration::from_secs(26 * 90);
         observe_enabled(&mut store, &sixty, &empty, end);
@@ -1052,7 +1048,10 @@ mod tests {
         );
         let ninety = vec![pad("a", 90, PowerState::Discharging)];
         observe_enabled(&mut store, &unplugged, &ninety, ms(1_060 + 6 * 90));
-        assert_eq!(store.open_session("a").unwrap().waypoints.len(), after_start + 1);
+        assert_eq!(
+            store.open_session("a").unwrap().waypoints.len(),
+            after_start + 1
+        );
     }
 
     #[test]

@@ -598,10 +598,7 @@ fn analytics_view<'a>(
 }
 
 fn analytics_pad_card<'a>(row: &'a AnalyticsPadRow) -> Element<'a, ConfigureMessage> {
-    let charge = row
-        .typical_charge
-        .as_deref()
-        .unwrap_or("Learning…");
+    let charge = row.typical_charge.as_deref().unwrap_or("Learning…");
     let play = row.typical_play.as_deref().unwrap_or("Learning…");
 
     let mut col = Column::new()
@@ -673,7 +670,12 @@ impl canvas::Program<ConfigureMessage> for TimelineChart {
         }
 
         let t0 = self.waypoints.first().map(|w| w.at_ms).unwrap_or(0);
-        let t1 = self.waypoints.last().map(|w| w.at_ms).unwrap_or(t0).max(t0 + 1);
+        let t1 = self
+            .waypoints
+            .last()
+            .map(|w| w.at_ms)
+            .unwrap_or(t0)
+            .max(t0 + 1);
 
         let stroke_color = match self.kind {
             SessionKind::Charging => theme::SUCCESS,
@@ -696,9 +698,7 @@ impl canvas::Program<ConfigureMessage> for TimelineChart {
         });
         frame.stroke(
             &path,
-            Stroke::default()
-                .with_width(2.0)
-                .with_color(stroke_color),
+            Stroke::default().with_width(2.0).with_color(stroke_color),
         );
 
         // Mark pause / resume points.
@@ -719,10 +719,7 @@ impl canvas::Program<ConfigureMessage> for TimelineChart {
         }
 
         // 0% / 100% guides.
-        let top = Path::line(
-            Point::new(pad, pad),
-            Point::new(pad + width, pad),
-        );
+        let top = Path::line(Point::new(pad, pad), Point::new(pad + width, pad));
         let bottom = Path::line(
             Point::new(pad, pad + height),
             Point::new(pad + width, pad + height),

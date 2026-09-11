@@ -3,10 +3,10 @@
 //! The daemon boots windowless: it owns the tray icon and only opens windows on
 //! demand (controller popup, configure window, overlay toast).
 
+use crate::analytics::{self, AnalyticsStore};
 use crate::app_log;
 #[cfg(windows)]
 use crate::autostart;
-use crate::analytics::{self, AnalyticsStore};
 use crate::battery::{self, ControllerStatus};
 use crate::color::{self, BatterySpectrum, color_for_battery_percent};
 use crate::configure_view::{
@@ -1026,8 +1026,7 @@ impl App {
         }
 
         if preset == Preset::AnalyticsSeedEstimates {
-            self.analytics
-                .dev_seed_estimates(emulate::PRIMARY_SERIAL);
+            self.analytics.dev_seed_estimates(emulate::PRIMARY_SERIAL);
             self.analytics.save();
             self.refresh_analytics_panel();
         }

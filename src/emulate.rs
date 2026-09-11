@@ -59,24 +59,6 @@ impl Preset {
         }
     }
 
-    pub const ALL: &'static [Preset] = &[
-        Self::Discharging50,
-        Self::LowBattery,
-        Self::Charging,
-        Self::FullyCharged,
-        Self::ChargeCompleteStep,
-        Self::TwoPads,
-        Self::Clear,
-        Self::AnalyticsSeedEstimates,
-        Self::AnalyticsPlugEmpty,
-        Self::AnalyticsChargeAdvance,
-        Self::AnalyticsUnplugFull,
-        Self::AnalyticsDrainAdvance,
-        Self::AnalyticsPause,
-        Self::AnalyticsResume,
-        Self::AnalyticsPlugMidDrain,
-    ];
-
     pub fn is_analytics(self) -> bool {
         matches!(
             self,
@@ -109,11 +91,7 @@ fn one(
     }
 }
 
-fn primary(
-    percent: u8,
-    state: PowerState,
-    connection: &'static str,
-) -> ControllerStatus {
+fn primary(percent: u8, state: PowerState, connection: &'static str) -> ControllerStatus {
     one(1, "1", percent, state, connection)
 }
 
@@ -201,17 +179,13 @@ pub fn apply_preset(preset: Preset, current: &[ControllerStatus]) -> Vec<Control
                     next
                 };
                 vec![primary(next, PowerState::Discharging, "Bluetooth")]
-            } else if pad.state == PowerState::Complete {
-                vec![primary(100, PowerState::Discharging, "Bluetooth")]
             } else {
                 vec![primary(100, PowerState::Discharging, "Bluetooth")]
             }
         }
         Preset::AnalyticsPause => Vec::new(),
         Preset::AnalyticsResume => {
-            let percent = primary_from(current)
-                .map(|p| p.percent)
-                .unwrap_or(60);
+            let percent = primary_from(current).map(|p| p.percent).unwrap_or(60);
             // After pause, current is empty — caller should pass last-known via resume helper.
             vec![primary(percent, PowerState::Discharging, "Bluetooth")]
         }
@@ -223,13 +197,6 @@ pub fn apply_preset(preset: Preset, current: &[ControllerStatus]) -> Vec<Control
             vec![primary(percent, PowerState::Charging, "USB")]
         }
     }
-}
-
-/// Resume percent after AnalyticsPause (current list is empty).
-pub fn resume_percent(last: &[ControllerStatus]) -> u8 {
-    primary_from(last)
-        .map(|p| p.percent)
-        .unwrap_or(60)
 }
 
 #[cfg(test)]

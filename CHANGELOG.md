@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-12
+
 ### Fixed
 
 - Overlay toasts on Windows no longer steal focus when they appear (games and other apps keep the foreground).
@@ -181,6 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.0.1]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.15...v1.0.0
 [0.1.15]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.13...v0.1.14

@@ -51,12 +51,12 @@ fn log_file_path() -> PathBuf {
 }
 
 fn rotate_if_needed(path: &Path) {
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() >= MAX_LOG_BYTES {
-            let bak = path.with_extension("log.1");
-            let _ = fs::remove_file(&bak);
-            let _ = fs::rename(path, bak);
-        }
+    if let Ok(meta) = fs::metadata(path)
+        && meta.len() >= MAX_LOG_BYTES
+    {
+        let bak = path.with_extension("log.1");
+        let _ = fs::remove_file(&bak);
+        let _ = fs::rename(path, bak);
     }
 }
 
@@ -68,10 +68,10 @@ fn write_line(level: &str, message: impl AsRef<str>) {
     let line = format!("[{ts}] {level}: {}\n", message.as_ref());
 
     let path = LOG_PATH.lock().ok().and_then(|g| g.clone());
-    if let Some(path) = path {
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = file.write_all(line.as_bytes());
-        }
+    if let Some(path) = path
+        && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
     }
 }
 

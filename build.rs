@@ -16,8 +16,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let connected = svg_icon::render_dualsense_connected_rgba(TRAY_SIZE)
         .expect("rasterize connected DualSense icon");
-    let dim =
-        svg_icon::render_dualsense_dim_rgba(TRAY_SIZE).expect("rasterize dim DualSense icon");
+    let dim = svg_icon::render_dualsense_dim_rgba(TRAY_SIZE).expect("rasterize dim DualSense icon");
 
     write_embedded_bytes(&out_dir, &connected, &dim);
 

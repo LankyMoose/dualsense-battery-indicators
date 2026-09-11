@@ -1,4 +1,4 @@
-//! Persisted remembered DualSense pads (opt-in via tray Remember toggle).
+//! Persisted remembered DualSense pads and nicknames (`controllers.json`).
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
@@ -20,11 +20,14 @@ pub struct KnownController {
 struct KnownFile {
     #[serde(default)]
     controllers: Vec<KnownController>,
+    #[serde(default)]
+    nicknames: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct KnownControllers {
     by_serial: HashMap<String, KnownController>,
+    nicknames: HashMap<String, String>,
     dirty: bool,
 }
 
@@ -78,8 +81,19 @@ impl KnownControllers {
                 by_serial.insert(record.serial.clone(), record);
             }
         }
+        let mut nicknames = HashMap::new();
+        for (serial, name) in file.nicknames {
+            if !Self::is_storable_serial(&serial) {
+                continue;
+            }
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                nicknames.insert(serial, trimmed.to_string());
+            }
+        }
         Self {
             by_serial,
+            nicknames,
             dirty: false,
         }
     }
@@ -89,16 +103,19 @@ impl KnownControllers {
             return;
         }
         let path = store_path();
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                app_log::warn(format!("failed to create controllers dir: {err}"));
-                return;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            app_log::warn(format!("failed to create controllers dir: {err}"));
+            return;
         }
 
         let mut controllers: Vec<_> = self.by_serial.values().cloned().collect();
         controllers.sort_by(|a, b| a.serial.cmp(&b.serial));
-        let file = KnownFile { controllers };
+        let file = KnownFile {
+            controllers,
+            nicknames: self.nicknames.clone(),
+        };
 
         match serde_json::to_vec_pretty(&file) {
             Ok(bytes) => {
@@ -114,6 +131,38 @@ impl KnownControllers {
 
     pub fn is_remembered(&self, serial: &str) -> bool {
         self.by_serial.contains_key(serial)
+    }
+
+    pub fn nickname(&self, serial: &str) -> Option<&str> {
+        self.nicknames.get(serial).map(String::as_str)
+    }
+
+    /// Set or clear a nickname. Empty / whitespace clears. Returns true if stored data changed.
+    pub fn set_nickname(&mut self, serial: &str, nickname: Option<String>) -> bool {
+        if !Self::is_storable_serial(serial) {
+            return false;
+        }
+        let next = nickname
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let changed = match (&next, self.nicknames.get(serial)) {
+            (Some(name), Some(existing)) => name != existing,
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => false,
+        };
+        if !changed {
+            return false;
+        }
+        match next {
+            Some(name) => {
+                self.nicknames.insert(serial.to_string(), name);
+            }
+            None => {
+                self.nicknames.remove(serial);
+            }
+        }
+        self.dirty = true;
+        true
     }
 
     pub fn remember(&mut self, controller: &ControllerStatus) -> bool {
@@ -155,10 +204,10 @@ impl KnownControllers {
             if !Self::is_storable_serial(&controller.serial) {
                 continue;
             }
-            if let Some(record) = self.by_serial.get_mut(&controller.serial) {
-                if record.update_from_status(controller) {
-                    changed = true;
-                }
+            if let Some(record) = self.by_serial.get_mut(&controller.serial)
+                && record.update_from_status(controller)
+            {
+                changed = true;
             }
         }
         if changed {
@@ -282,5 +331,44 @@ mod tests {
         let disconnected = store.remembered_disconnected(&live);
         assert_eq!(disconnected.len(), 1);
         assert_eq!(disconnected[0].serial, "gone");
+    }
+
+    #[test]
+    fn nickname_set_and_clear() {
+        let mut store = KnownControllers::default();
+        assert!(store.set_nickname("abc123", Some("  Left pad  ".into())));
+        assert_eq!(store.nickname("abc123"), Some("Left pad"));
+        assert!(!store.set_nickname("abc123", Some("Left pad".into())));
+        assert!(store.set_nickname("abc123", Some("   ".into())));
+        assert_eq!(store.nickname("abc123"), None);
+    }
+
+    #[test]
+    fn nickname_survives_forget() {
+        let mut store = KnownControllers::default();
+        store.remember(&pad("abc123", 50, "USB"));
+        store.set_nickname("abc123", Some("Couch".into()));
+        assert!(store.forget("abc123"));
+        assert!(!store.is_remembered("abc123"));
+        assert_eq!(store.nickname("abc123"), Some("Couch"));
+    }
+
+    #[test]
+    fn nickname_rejects_unknown_serials() {
+        let mut store = KnownControllers::default();
+        assert!(!store.set_nickname("unknown", Some("Nope".into())));
+        assert!(!store.set_nickname("", Some("Nope".into())));
+        assert_eq!(store.nickname("unknown"), None);
+    }
+
+    #[test]
+    fn older_controllers_file_without_nicknames_loads() {
+        let file: KnownFile = serde_json::from_str(
+            r#"{"controllers":[{"serial":"abc","product":"DualSense","connection":"USB","percent":40}]}"#,
+        )
+        .unwrap();
+        let store = KnownControllers::from_file(file);
+        assert!(store.is_remembered("abc"));
+        assert!(store.nicknames.is_empty());
     }
 }

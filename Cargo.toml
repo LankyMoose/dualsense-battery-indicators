@@ -2,7 +2,7 @@
 name = "dualsense-battery-indicators"
 version = "0.1.13"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "DualSense Battery Indicators — show DualSense controller battery levels in the system tray"
 authors = ["LankyMoose"]
 license = "MIT"
@@ -19,15 +19,12 @@ dev-emulate = []
 
 [dependencies]
 crc32fast = "1.5.0"
-font-kit = "0.14"
-fontdue = "0.9"
 hidapi = "2.6.6"
+iced = { version = "0.14.0", features = ["canvas", "tokio", "svg", "image"] }
 resvg = { version = "0.45", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 single-instance = "0.3.3"
-softbuffer = "0.4"
-taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
 
 [build-dependencies]
 ico = "0.4"
@@ -38,12 +35,9 @@ winres = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false }
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false }
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"] }
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland"] }

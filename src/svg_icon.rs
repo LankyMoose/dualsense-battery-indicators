@@ -9,7 +9,9 @@ pub const DUALSENSE_SVG: &str = include_str!("../assets/icons/dualsense.svg");
 pub const SETTINGS_SVG: &str = include_str!("../assets/icons/settings.svg");
 pub const IDENTIFY_SVG: &str = include_str!("../assets/icons/identify.svg");
 pub const POWER_SVG: &str = include_str!("../assets/icons/power.svg");
+pub const EDIT_SVG: &str = include_str!("../assets/icons/edit.svg");
 pub const CLOSE_SVG: &str = include_str!("../assets/icons/close.svg");
+#[allow(dead_code)] // available for title-bar chrome
 pub const MINIMIZE_SVG: &str = include_str!("../assets/icons/minimize.svg");
 pub const CHECK_SVG: &str = include_str!("../assets/icons/check.svg");
 
@@ -37,6 +39,7 @@ pub struct RgbaColor {
 }
 
 impl RgbaColor {
+    #[allow(dead_code)]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, a: 255 }
     }
@@ -61,6 +64,7 @@ pub struct ColorMap {
 }
 
 impl ColorMap {
+    #[allow(dead_code)]
     pub fn current_color(color: RgbaColor) -> Self {
         Self {
             replacements: vec![("currentColor".into(), color.to_hex())],
@@ -125,10 +129,10 @@ pub fn rasterize(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>, Str
         size,
         colors: colors.clone(),
     };
-    if let Ok(cache) = RASTER_CACHE.lock() {
-        if let Some(hit) = cache.get(&key) {
-            return Ok(hit.clone());
-        }
+    if let Ok(cache) = RASTER_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return Ok(hit.clone());
     }
 
     let rgba = rasterize_uncached(svg, size, colors)?;
@@ -143,8 +147,8 @@ fn rasterize_uncached(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>
     let tree = usvg::Tree::from_str(&tinted, &usvg::Options::default())
         .map_err(|e| format!("parse SVG: {e}"))?;
 
-    let mut pixmap =
-        tiny_skia::Pixmap::new(size, size).ok_or_else(|| format!("allocate {size}x{size} pixmap"))?;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)
+        .ok_or_else(|| format!("allocate {size}x{size} pixmap"))?;
 
     let svg_size = tree.size();
     let svg_w = svg_size.width().max(1.0);
@@ -160,8 +164,7 @@ fn rasterize_uncached(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>
 
 fn straight_rgba_from_premultiplied(premul: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(premul.len());
-    for chunk in premul.chunks_exact(4) {
-        let (pr, pg, pb, a) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+    for &[pr, pg, pb, a] in premul.as_chunks::<4>().0 {
         if a == 0 {
             out.extend_from_slice(&[0, 0, 0, 0]);
         } else if a == 255 {
@@ -204,8 +207,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rgba.len(), 24 * 24 * 4);
-        assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
-        assert!(rgba.chunks_exact(4).any(|px| px[3] == 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|px| px[3] == 0));
     }
 
     #[test]
@@ -223,7 +226,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(blue.len(), 32 * 32 * 4);
-        assert!(blue.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(blue.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
         assert_ne!(blue, red);
     }
 }

@@ -1,24 +1,25 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod app;
 mod app_log;
 mod app_meta;
 mod autostart;
 mod battery;
 mod color;
-mod configure_ui;
-mod controller_popup;
+mod configure_view;
 #[cfg(feature = "dev-emulate")]
 mod emulate;
 mod icon;
 mod known;
 mod lightbar;
 mod notify;
+mod popup_view;
 mod prefs;
 mod steam;
 mod svg_icon;
+mod theme;
 mod toast;
-mod tray;
-mod ui;
+mod toast_view;
 
 use app_meta::{DISPLAY_NAME, PKG_NAME, PKG_VERSION};
 use single_instance::SingleInstance;
@@ -111,9 +112,9 @@ fn main() -> ExitCode {
     }
 
     #[cfg(feature = "dev-emulate")]
-    let tray_result = tray::run(dev_mode);
+    let tray_result = app::run(dev_mode);
     #[cfg(not(feature = "dev-emulate"))]
-    let tray_result = tray::run();
+    let tray_result = app::run();
 
     if let Err(err) = tray_result {
         app_log::error(format!("tray exited with error: {err}"));

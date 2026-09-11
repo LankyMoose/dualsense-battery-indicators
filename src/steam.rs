@@ -27,10 +27,10 @@ static TEST_OVERRIDE: LazyLock<Mutex<Option<bool>>> = LazyLock::new(|| Mutex::ne
 /// Whether `steam.exe` is currently running. Result is cached for a few seconds.
 pub fn is_running() -> bool {
     #[cfg(test)]
-    if let Ok(guard) = TEST_OVERRIDE.lock() {
-        if let Some(value) = *guard {
-            return value;
-        }
+    if let Ok(guard) = TEST_OVERRIDE.lock()
+        && let Some(value) = *guard
+    {
+        return value;
     }
 
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());

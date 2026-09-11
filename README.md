@@ -16,7 +16,7 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Toasts appear in any configurable screen corner as always-on-top cards and dismiss on click or automatically after five seconds
 - Dark **iced** Configure window for notification (including low-battery %), toast-position, autostart, and lightbar settings
 - Detects controllers connecting/disconnecting within a few seconds
-- Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** inside a single-open accordion. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
+- Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** with a left-hand tab list. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
 - At **low battery while discharging** (same configurable threshold as the toast; default ≤5%), the lightbar periodically pulses **orange**
 - Icons live in `assets/icons/` (SVG) and are rasterized at build/runtime
 - UI shell is an **iced** daemon (tray via `tray-icon`); Configure, controller popup, and toasts are iced windows

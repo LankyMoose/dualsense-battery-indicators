@@ -709,8 +709,8 @@ impl App {
                 Some(id) => window::drag(id),
                 None => Task::none(),
             },
-            ConfigureMessage::ToggleSection(section) => {
-                self.configure_state.toggle_section(section);
+            ConfigureMessage::SelectSection(section) => {
+                self.configure_state.select_section(section);
                 Task::none()
             }
             ConfigureMessage::SetNotification(setting, enabled) => {

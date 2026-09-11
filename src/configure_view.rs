@@ -1,4 +1,4 @@
-//! Configure window UI: accordion sections, notification toggles, toast
+//! Configure window UI: sidebar tabs, notification toggles, toast
 //! position picker and the lightbar spectrum editor.
 
 use crate::app_meta::{DISPLAY_NAME, PKG_VERSION};
@@ -19,9 +19,15 @@ use iced::{
 };
 
 /// Logical width of the configure window.
-pub const WIDTH: f32 = 320.0;
+pub const WIDTH: f32 = 420.0;
 /// Logical height of the configure window.
-pub const HEIGHT: f32 = 560.0;
+pub const HEIGHT: f32 = 400.0;
+
+const SIDEBAR_WIDTH: f32 = 120.0;
+const CONTENT_PADDING: f32 = 10.0;
+const HEADER_HEIGHT: f32 = 32.0;
+/// Content pane width inside the window (sidebar + gaps/padding subtracted).
+const CONTENT_WIDTH: f32 = WIDTH - SIDEBAR_WIDTH - CONTENT_PADDING * 3.0;
 
 const BAR_HEIGHT: f32 = 44.0;
 const SV_HEIGHT: f32 = 112.0;
@@ -56,6 +62,32 @@ impl Section {
             Self::Developer => "Developer",
         }
     }
+
+    fn all(show_developer: bool) -> Vec<Self> {
+        #[cfg(feature = "dev-emulate")]
+        {
+            let mut sections = vec![
+                Self::System,
+                Self::Notifications,
+                Self::ToastPosition,
+                Self::Lightbar,
+            ];
+            if show_developer {
+                sections.push(Self::Developer);
+            }
+            sections
+        }
+        #[cfg(not(feature = "dev-emulate"))]
+        {
+            let _ = show_developer;
+            vec![
+                Self::System,
+                Self::Notifications,
+                Self::ToastPosition,
+                Self::Lightbar,
+            ]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +114,7 @@ pub struct ConfigureSettings {
 
 #[derive(Debug, Clone)]
 pub enum ConfigureMessage {
-    ToggleSection(Section),
+    SelectSection(Section),
     SetNotification(NotificationSetting, bool),
     SetLowBatteryPercent(u8),
     SetToastPosition(ToastPosition),
@@ -107,7 +139,7 @@ pub enum ConfigureMessage {
 /// Mutable UI state owned by the daemon.
 #[derive(Debug)]
 pub struct ConfigureState {
-    pub section: Option<Section>,
+    pub section: Section,
     pub spectrum: BatterySpectrum,
     pub selected: usize,
     pub hue: f32,
@@ -119,7 +151,7 @@ pub struct ConfigureState {
 impl ConfigureState {
     pub fn new(spectrum: BatterySpectrum) -> Self {
         let mut state = Self {
-            section: Some(Section::System),
+            section: Section::System,
             spectrum,
             selected: 0,
             hue: 0.0,
@@ -152,12 +184,8 @@ impl ConfigureState {
         self.sync_hsv();
     }
 
-    pub fn toggle_section(&mut self, section: Section) {
-        self.section = if self.section == Some(section) {
-            None
-        } else {
-            Some(section)
-        };
+    pub fn select_section(&mut self, section: Section) {
+        self.section = section;
     }
 
     pub fn select(&mut self, index: usize) {
@@ -299,7 +327,8 @@ pub fn view<'a>(
     let title = mouse_area(
         container(text("Settings").size(15.0).color(theme::INK))
             .width(Fill)
-            .padding([4, 0]),
+            .height(Fill)
+            .align_y(Alignment::Center),
     )
     .on_press(ConfigureMessage::DragWindow)
     .interaction(mouse::Interaction::Grab);
@@ -319,71 +348,95 @@ pub fn view<'a>(
         .style(theme::ghost),
     ]
     .align_y(Alignment::Center)
-    .spacing(6);
+    .spacing(6)
+    .height(Length::Fixed(HEADER_HEIGHT));
 
-    let mut sections = Column::new().spacing(6).width(Fill);
-    sections = sections.push(section(state, Section::System, system_view(settings)));
-    sections = sections.push(section(
-        state,
-        Section::Notifications,
-        notifications_view(settings),
-    ));
-    sections = sections.push(section(
-        state,
-        Section::ToastPosition,
-        toast_position_view(settings, theme::from_rgb(state.spectrum.accent())),
-    ));
-    sections = sections.push(section(state, Section::Lightbar, lightbar_view(state)));
+    let sidebar = tab_list(state.section, settings.show_developer);
+    let content = section_content(state, settings);
 
-    #[cfg(feature = "dev-emulate")]
-    if settings.show_developer {
-        sections = sections.push(section(state, Section::Developer, developer_view()));
-    }
-    #[cfg(not(feature = "dev-emulate"))]
-    let _ = settings.show_developer;
+    let body = row![
+        container(sidebar)
+            .width(Length::Fixed(SIDEBAR_WIDTH))
+            .height(Fill)
+            .padding([4, 4])
+            .style(theme::sidebar),
+        scrollable(container(content).padding([0, 2]).width(Fill))
+            .height(Fill)
+            .width(Fill),
+    ]
+    .spacing(CONTENT_PADDING)
+    .width(Fill)
+    .height(Fill);
+
+    let chrome = column![
+        container(header)
+            .padding([0.0, CONTENT_PADDING])
+            .width(Fill),
+        container(space())
+            .width(Fill)
+            .height(Length::Fixed(1.0))
+            .style(theme::configure_header_rule),
+    ]
+    .width(Fill);
 
     container(
-        column![header, scrollable(sections).height(Fill)]
-            .spacing(10)
-            .width(Fill)
-            .height(Fill),
+        column![
+            chrome,
+            container(body)
+                .padding(CONTENT_PADDING)
+                .width(Fill)
+                .height(Fill)
+                .style(theme::configure_body),
+        ]
+        .width(Fill)
+        .height(Fill),
     )
-    .padding(10)
     .width(Fill)
     .height(Fill)
     .style(theme::root)
     .into()
 }
 
-fn section<'a>(
-    state: &ConfigureState,
-    id: Section,
-    content: Element<'a, ConfigureMessage>,
-) -> Element<'a, ConfigureMessage> {
-    let open = state.section == Some(id);
-
-    let header = button(
-        row![
-            text(id.title()).size(13.0).width(Fill),
-            text(if open { "−" } else { "+" }).size(13.0),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .padding([6, 10])
-    .width(Fill)
-    .on_press(ConfigureMessage::ToggleSection(id))
-    .style(theme::section);
-
-    let mut body = Column::new().spacing(6).width(Fill).push(header);
-    if open {
-        body = body.push(
-            container(content)
-                .padding([8, 10])
+fn tab_list<'a>(active: Section, show_developer: bool) -> Element<'a, ConfigureMessage> {
+    Section::all(show_developer)
+        .into_iter()
+        .fold(Column::new().spacing(2).width(Fill), |list, section| {
+            let selected = active == section;
+            list.push(
+                button(
+                    row![
+                        container(space())
+                            .width(Length::Fixed(2.0))
+                            .height(Length::Fixed(12.0))
+                            .style(theme::position_rail(selected)),
+                        text(section.title()).size(12.0).width(Fill),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([5, 6])
                 .width(Fill)
-                .style(theme::panel),
-        );
+                .on_press(ConfigureMessage::SelectSection(section))
+                .style(theme::tab(selected)),
+            )
+        })
+        .into()
+}
+
+fn section_content<'a>(
+    state: &'a ConfigureState,
+    settings: &ConfigureSettings,
+) -> Element<'a, ConfigureMessage> {
+    match state.section {
+        Section::System => system_view(settings),
+        Section::Notifications => notifications_view(settings),
+        Section::ToastPosition => {
+            toast_position_view(settings, theme::from_rgb(state.spectrum.accent()))
+        }
+        Section::Lightbar => lightbar_view(state),
+        #[cfg(feature = "dev-emulate")]
+        Section::Developer => developer_view(),
     }
-    body.into()
 }
 
 fn system_view<'a>(settings: &ConfigureSettings) -> Element<'a, ConfigureMessage> {
@@ -465,7 +518,7 @@ fn toast_position_view<'a>(
     accent: Color,
 ) -> Element<'a, ConfigureMessage> {
     // Match the softbuffer diagram: 16:9 “monitor” with mini toast cards at each corner/edge.
-    let stage_width = WIDTH - 40.0;
+    let stage_width = CONTENT_WIDTH;
     let stage_height = stage_width * 9.0 / 16.0;
     let toast_h = (POSITION_TOAST_W / TOAST_ASPECT).max(10.0);
 

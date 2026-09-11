@@ -5,7 +5,7 @@ use crate::app_meta::{DISPLAY_NAME, PKG_VERSION};
 use crate::color::{BatterySpectrum, GradientStop, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::Preset;
-use crate::prefs::ToastPosition;
+use crate::prefs::{LOW_BATTERY_PERCENT_MAX, LOW_BATTERY_PERCENT_MIN, ToastPosition};
 use crate::svg_icon;
 use crate::theme;
 use iced::mouse;
@@ -73,6 +73,7 @@ pub struct ConfigureSettings {
     pub notify_charged: bool,
     pub notify_connect: bool,
     pub notify_disconnect: bool,
+    pub low_battery_percent: u8,
     pub toast_position: ToastPosition,
     #[cfg(windows)]
     pub autostart: bool,
@@ -83,6 +84,7 @@ pub struct ConfigureSettings {
 pub enum ConfigureMessage {
     ToggleSection(Section),
     SetNotification(NotificationSetting, bool),
+    SetLowBatteryPercent(u8),
     SetToastPosition(ToastPosition),
     #[cfg(windows)]
     SetAutostart(bool),
@@ -419,6 +421,21 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
             .on_toggle(move |enabled| ConfigureMessage::SetNotification(setting, enabled))
     };
 
+    let threshold = settings.low_battery_percent;
+    let low_slider = column![
+        text(format!("At or below {threshold}%"))
+            .size(11.0)
+            .color(theme::MUTED),
+        slider(
+            f32::from(LOW_BATTERY_PERCENT_MIN)..=f32::from(LOW_BATTERY_PERCENT_MAX),
+            f32::from(threshold),
+            |value| ConfigureMessage::SetLowBatteryPercent(value.round() as u8),
+        )
+        .step(5.0_f32),
+    ]
+    .spacing(4)
+    .width(Fill);
+
     column![
         toggle(
             "Connected",
@@ -431,6 +448,7 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
             NotificationSetting::Disconnect
         ),
         toggle("Low battery", settings.notify_low, NotificationSetting::Low),
+        low_slider,
         toggle(
             "Finished charging",
             settings.notify_charged,

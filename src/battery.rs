@@ -98,9 +98,9 @@ pub struct ControllerStatus {
 }
 
 impl ControllerStatus {
-    /// Critical low bucket while discharging (drives orange pulse).
-    pub fn is_low_battery(&self) -> bool {
-        self.percent <= LOW_BATTERY_PERCENT && self.state.is_discharging()
+    /// Low battery while discharging (toast, orange pulse, popup label).
+    pub fn is_low_battery(&self, threshold: u8) -> bool {
+        self.percent <= threshold && self.state.is_discharging()
     }
 }
 
@@ -523,8 +523,23 @@ mod tests {
             state: PowerState::Charging,
             ..discharging.clone()
         };
-        assert!(discharging.is_low_battery());
-        assert!(!charging.is_low_battery());
+        assert!(discharging.is_low_battery(LOW_BATTERY_PERCENT));
+        assert!(!charging.is_low_battery(LOW_BATTERY_PERCENT));
+    }
+
+    #[test]
+    fn low_battery_respects_threshold() {
+        let pad = ControllerStatus {
+            index: 1,
+            product: "DualSense",
+            connection: "USB",
+            serial: "abc".into(),
+            percent: 25,
+            state: PowerState::Discharging,
+        };
+        assert!(!pad.is_low_battery(15));
+        assert!(pad.is_low_battery(25));
+        assert!(pad.is_low_battery(35));
     }
 
     #[test]

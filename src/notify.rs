@@ -89,8 +89,8 @@ impl NotifyTracker {
                 events.push((controller, NotifyKind::Connect));
             }
 
-            let was_low = prev.is_some_and(|p| p.is_low_battery());
-            if controller.is_low_battery() {
+            let was_low = prev.is_some_and(|p| p.is_low_battery(prefs.low_battery_percent));
+            if controller.is_low_battery(prefs.low_battery_percent) {
                 if !was_low && !flags.notified_low && prefs.notify_low {
                     events.push((controller, NotifyKind::Low));
                     flags.notified_low = true;
@@ -179,6 +179,7 @@ mod tests {
             notify_charged,
             notify_connect,
             notify_disconnect: true,
+            low_battery_percent: crate::battery::LOW_BATTERY_PERCENT,
             toast_position: Default::default(),
             spectrum: Default::default(),
         }
@@ -285,6 +286,33 @@ mod tests {
         assert!(tracker.by_serial["a"].notified_low);
 
         assert!(tracker.collect_events(&low, &low, &p).is_empty());
+    }
+
+    #[test]
+    fn low_threshold_is_configurable() {
+        let mut tracker = NotifyTracker::new();
+        let mut p = prefs(true, true, false);
+        p.low_battery_percent = 25;
+        let mid = vec![pad("a", 35, PowerState::Discharging, "USB")];
+        let at_threshold = vec![pad("a", 25, PowerState::Discharging, "USB")];
+
+        assert!(tracker.collect_events(&[], &mid, &p).is_empty());
+        let events = tracker.collect_events(&mid, &at_threshold, &p);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, NotifyKind::Low);
+        assert!(tracker.collect_events(&at_threshold, &at_threshold, &p).is_empty());
+    }
+
+    #[test]
+    fn above_custom_threshold_is_not_low() {
+        let mut tracker = NotifyTracker::new();
+        let mut p = prefs(true, true, false);
+        p.low_battery_percent = 25;
+        let mid = vec![pad("a", 50, PowerState::Discharging, "USB")];
+        let still_ok = vec![pad("a", 35, PowerState::Discharging, "USB")];
+
+        assert!(tracker.collect_events(&mid, &still_ok, &p).is_empty());
+        assert!(!tracker.by_serial["a"].notified_low);
     }
 
     #[test]

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Configurable low-battery threshold (5–50%, default 5%) in Configure → Notifications; shared by the low-battery toast, orange lightbar pulse, and popup “low battery” label.
+
 ## [0.1.14] - 2026-09-11
 
 ### Added

@@ -20,7 +20,7 @@ use crate::lightbar::{
 };
 use crate::notify::{NotifyEvent, NotifyTracker};
 use crate::popup_view::{self, ControllerRow, PopupMessage};
-use crate::prefs::{Prefs, ToastPosition};
+use crate::prefs::{Prefs, ToastPosition, clamp_low_battery_percent};
 use crate::theme;
 use crate::toast::ToastMessage;
 use crate::toast_view;
@@ -532,10 +532,11 @@ impl App {
     }
 
     fn sync_low_battery(&self) {
+        let threshold = self.prefs.low_battery_percent;
         let list: Vec<(String, u8)> = self
             .controllers
             .iter()
-            .filter(|c| c.is_low_battery() && !is_emulated_serial(&c.serial))
+            .filter(|c| c.is_low_battery(threshold) && !is_emulated_serial(&c.serial))
             .map(|c| (c.serial.clone(), c.percent))
             .collect();
         if let Ok(mut guard) = self.low_battery.lock() {
@@ -548,6 +549,7 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn sync_popup_rows(&mut self) {
+        let threshold = self.prefs.low_battery_percent;
         let mut rows = Vec::new();
         for controller in &self.controllers {
             rows.push(ControllerRow::connected(
@@ -556,6 +558,7 @@ impl App {
                 KnownControllers::is_storable_serial(&controller.serial)
                     && !is_emulated_serial(&controller.serial),
                 self.known.nickname(&controller.serial).map(str::to_string),
+                threshold,
             ));
         }
         for controller in self.known.remembered_disconnected(&self.controllers) {
@@ -657,6 +660,7 @@ impl App {
             notify_charged: self.prefs.notify_charged,
             notify_connect: self.prefs.notify_connect,
             notify_disconnect: self.prefs.notify_disconnect,
+            low_battery_percent: self.prefs.low_battery_percent,
             toast_position: self.prefs.toast_position,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
@@ -717,6 +721,16 @@ impl App {
                     NotificationSetting::Charged => self.prefs.notify_charged = enabled,
                 }
                 self.prefs.save();
+                Task::none()
+            }
+            ConfigureMessage::SetLowBatteryPercent(percent) => {
+                let percent = clamp_low_battery_percent(percent);
+                if self.prefs.low_battery_percent != percent {
+                    self.prefs.low_battery_percent = percent;
+                    self.prefs.save();
+                    self.sync_low_battery();
+                    self.sync_popup_rows();
+                }
                 Task::none()
             }
             ConfigureMessage::SetToastPosition(position) => {

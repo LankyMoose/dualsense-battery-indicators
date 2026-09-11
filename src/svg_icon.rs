@@ -164,8 +164,7 @@ fn rasterize_uncached(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>
 
 fn straight_rgba_from_premultiplied(premul: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(premul.len());
-    for chunk in premul.chunks_exact(4) {
-        let (pr, pg, pb, a) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+    for &[pr, pg, pb, a] in premul.as_chunks::<4>().0 {
         if a == 0 {
             out.extend_from_slice(&[0, 0, 0, 0]);
         } else if a == 255 {

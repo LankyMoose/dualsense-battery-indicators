@@ -121,8 +121,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v0.1.15
-git push origin v0.1.15
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

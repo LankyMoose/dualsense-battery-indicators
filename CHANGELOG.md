@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-11
+
 ### Added
 
 - Opt-in **Battery analytics** (Settings → Analytics, off by default): records local charge and play cycles from DualSense power-state events (no extra polling) to estimate time-to-full and play time remaining. Needs one qualifying full charge and one drain from 100% (which may span several sittings). Stores a compact last-5 sample ring plus in-progress timeline waypoints in `analytics.json`; Clear recorded data wipes it. When enough data exists, the percent ring on the tray popup and overlay toasts shows a compact estimate (e.g. `est. 8h`).
+- Developer mode analytics presets (seed estimates, charge/drain advances, pause/resume) for walking cycles without hardware.
+
+### Changed
+
+- Body text sizes and secondary colors are slightly larger/brighter across Settings, popup, and toasts for readability.
 
 ## [0.1.15] - 2026-09-11
 
@@ -170,6 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.0.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.15...v1.0.0
 [0.1.15]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.12...v0.1.13

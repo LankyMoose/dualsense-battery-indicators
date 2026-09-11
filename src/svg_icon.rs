@@ -207,8 +207,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rgba.len(), 24 * 24 * 4);
-        assert!(rgba.chunks_exact(4).any(|px| px[3] > 0));
-        assert!(rgba.chunks_exact(4).any(|px| px[3] == 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
+        assert!(rgba.as_chunks::<4>().0.iter().any(|px| px[3] == 0));
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(blue.len(), 32 * 32 * 4);
-        assert!(blue.chunks_exact(4).any(|px| px[3] > 0));
+        assert!(blue.as_chunks::<4>().0.iter().any(|px| px[3] > 0));
         assert_ne!(blue, red);
     }
 }

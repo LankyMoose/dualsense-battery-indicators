@@ -547,7 +547,7 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
     .width(Fill)
     .height(Length::Fixed(SV_HEIGHT));
 
-    let hue = slider(0.0..=360.0, state.hue, ConfigureMessage::HueChanged).step(1.0);
+    let hue = slider(0.0..=360.0, state.hue, ConfigureMessage::HueChanged).step(1.0_f32);
 
     let reset = button(text("Reset defaults").size(11.0).center().width(Fill))
         .padding([6, 4])

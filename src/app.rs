@@ -1051,8 +1051,8 @@ impl App {
                 .dev_paused_percent
                 .or_else(|| {
                     self.analytics
-                        .open_session(emulate::PRIMARY_SERIAL)
-                        .map(|o| o.last_percent)
+                        .in_progress(emulate::PRIMARY_SERIAL)
+                        .map(|p| p.percent)
                 })
                 .unwrap_or(60);
             vec![ControllerStatus {

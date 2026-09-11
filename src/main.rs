@@ -13,6 +13,7 @@ mod icon;
 mod known;
 mod lightbar;
 mod notify;
+mod percent_ring;
 mod popup_view;
 mod prefs;
 mod steam;

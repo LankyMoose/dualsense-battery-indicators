@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Configurable low-battery threshold (5–50%, default 5%) in Configure → Notifications; shared by the low-battery toast, orange lightbar pulse, and popup “low battery” label.
 - Overlay toasts show a circular battery outline filled to the current percent, with the percentage in large type inside the ring.
+- Controller popup rows use the same circular percent readout in place of the DualSense glyph.
 
 ## [0.1.14] - 2026-09-11
 

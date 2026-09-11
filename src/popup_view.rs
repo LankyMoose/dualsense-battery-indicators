@@ -3,6 +3,7 @@
 use crate::battery::ControllerStatus;
 use crate::color::BatterySpectrum;
 use crate::known::KnownController;
+use crate::percent_ring::{self, POPUP_SIZE};
 use crate::svg_icon;
 use crate::theme;
 use iced::widget::{
@@ -21,9 +22,6 @@ const ROW_SPACING: f32 = 6.0;
 const PADDING: f32 = 10.0;
 const EMPTY_HEIGHT: f32 = 56.0;
 const ICON_SIZE: f32 = 18.0;
-const GLYPH_SIZE: f32 = 28.0;
-const METER_WIDTH: f32 = 132.0;
-const METER_HEIGHT: f32 = 6.0;
 const NICKNAME_MAX_CHARS: usize = 32;
 
 /// Widget id of the nickname editor, so the daemon can focus it on demand.
@@ -218,18 +216,8 @@ fn controller_row<'a>(
     spectrum: &BatterySpectrum,
 ) -> Element<'a, PopupMessage> {
     let accent = theme::from_rgb(spectrum.color_at_percent(entry.percent));
-    let glyph_color = if entry.connected { accent } else { theme::DIM };
-
-    let glyph = container(
-        svg(svg::Handle::from_memory(svg_icon::DUALSENSE_SVG.as_bytes()))
-            .width(Length::Fixed(GLYPH_SIZE))
-            .height(Length::Fixed(GLYPH_SIZE))
-            .style(move |_theme, _status| svg::Style {
-                color: Some(glyph_color),
-            }),
-    )
-    .width(Length::Fixed(GLYPH_SIZE))
-    .height(Length::Fixed(GLYPH_SIZE));
+    let ring_color = if entry.connected { accent } else { theme::DIM };
+    let ring = percent_ring::percent_ring(entry.percent, ring_color, POPUP_SIZE);
 
     let name: Element<'_, PopupMessage> = if state.is_editing(&entry.serial) {
         text_input("Nickname", &state.draft)
@@ -291,17 +279,14 @@ fn controller_row<'a>(
         }
     }
 
-    let meta = text(format!(
-        "{} · {} · {}%",
-        entry.connection, entry.state, entry.percent
-    ))
-    .size(11.0)
-    .color(if entry.low {
-        theme::WARNING
-    } else {
-        theme::DIM
-    })
-    .width(Fill);
+    let meta = text(format!("{} · {}", entry.connection, entry.state))
+        .size(11.0)
+        .color(if entry.low {
+            theme::WARNING
+        } else {
+            theme::DIM
+        })
+        .width(Fill);
 
     let remember: Element<'_, PopupMessage> = if entry.remember_enabled {
         let serial = entry.serial.clone();
@@ -318,14 +303,13 @@ fn controller_row<'a>(
 
     let details = column![
         row![name, actions].spacing(6).align_y(Alignment::Center),
-        meter(entry.percent, accent),
         row![meta, remember].spacing(6).align_y(Alignment::Center),
     ]
     .spacing(5)
     .width(Fill);
 
     container(
-        row![glyph, details]
+        row![ring, details]
             .spacing(10)
             .align_y(Alignment::Center)
             .width(Fill),
@@ -334,21 +318,6 @@ fn controller_row<'a>(
     .width(Fill)
     .height(Length::Fixed(ROW_HEIGHT))
     .style(theme::surface)
-    .into()
-}
-
-fn meter<'a, Message: 'a>(percent: u8, color: Color) -> Element<'a, Message> {
-    let filled = METER_WIDTH * (percent.min(100) as f32 / 100.0);
-
-    container(
-        container(space().height(Length::Fixed(METER_HEIGHT)))
-            .width(Length::Fixed(filled))
-            .height(Length::Fixed(METER_HEIGHT))
-            .style(theme::meter_fill(color)),
-    )
-    .width(Length::Fixed(METER_WIDTH))
-    .height(Length::Fixed(METER_HEIGHT))
-    .style(theme::meter_track)
     .into()
 }
 

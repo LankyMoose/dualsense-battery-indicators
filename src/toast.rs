@@ -52,7 +52,8 @@ mod tests {
         let connected = vec![pad("a", 40)];
         let events = tracker.evaluate(&[], &connected, &Prefs::default(), |_| None);
         assert_eq!(events.len(), 1);
-        let message = ToastMessage::from_notification(events[0].clone(), BatterySpectrum::default());
+        let message =
+            ToastMessage::from_notification(events[0].clone(), BatterySpectrum::default());
         assert!(message.heading.contains("DualSense"));
         assert!(message.body.contains("40%"));
     }

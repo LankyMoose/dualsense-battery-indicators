@@ -172,10 +172,7 @@ pub fn view<'a>(
     spectrum: &BatterySpectrum,
 ) -> Element<'a, PopupMessage> {
     let header = row![
-        text("Controllers")
-            .size(13.0)
-            .color(theme::INK)
-            .width(Fill),
+        text("Controllers").size(13.0).color(theme::INK).width(Fill),
         icon_button(
             svg_icon::SETTINGS_SVG,
             theme::MUTED,
@@ -206,17 +203,12 @@ pub fn view<'a>(
         scrollable(list).height(Fill).into()
     };
 
-    container(
-        column![header, body]
-            .spacing(8)
-            .width(Fill)
-            .height(Fill),
-    )
-    .padding(PADDING)
-    .width(Fill)
-    .height(Fill)
-    .style(theme::root)
-    .into()
+    container(column![header, body].spacing(8).width(Fill).height(Fill))
+        .padding(PADDING)
+        .width(Fill)
+        .height(Fill)
+        .style(theme::root)
+        .into()
 }
 
 fn controller_row<'a>(
@@ -303,7 +295,11 @@ fn controller_row<'a>(
         entry.connection, entry.state, entry.percent
     ))
     .size(11.0)
-    .color(if entry.low { theme::WARNING } else { theme::DIM })
+    .color(if entry.low {
+        theme::WARNING
+    } else {
+        theme::DIM
+    })
     .width(Fill);
 
     let remember: Element<'_, PopupMessage> = if entry.remember_enabled {

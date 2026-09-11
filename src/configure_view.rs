@@ -14,7 +14,9 @@ use iced::widget::{
     Column, Row, button, canvas as canvas_widget, checkbox, column, container, mouse_area, row,
     scrollable, slider, space, svg, text,
 };
-use iced::{Alignment, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::{
+    Alignment, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
+};
 
 /// Logical width of the configure window.
 pub const WIDTH: f32 = 320.0;
@@ -276,7 +278,9 @@ pub fn suggested_stop_percent(spectrum: &BatterySpectrum) -> u8 {
     }
 
     if percents.contains(&best) {
-        (0..=100u8).find(|candidate| !percents.contains(candidate)).unwrap_or(best)
+        (0..=100u8)
+            .find(|candidate| !percents.contains(candidate))
+            .unwrap_or(best)
     } else {
         best
     }
@@ -416,7 +420,11 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
     };
 
     column![
-        toggle("Connected", settings.notify_connect, NotificationSetting::Connect),
+        toggle(
+            "Connected",
+            settings.notify_connect,
+            NotificationSetting::Connect
+        ),
         toggle(
             "Disconnected",
             settings.notify_disconnect,
@@ -446,10 +454,12 @@ fn toast_position_view<'a>(
     let marker = |position: ToastPosition| {
         let selected = settings.toast_position == position;
         button(
-            row![container(space())
-                .width(Length::Fixed(2.0))
-                .height(Fill)
-                .style(theme::position_rail(selected))]
+            row![
+                container(space())
+                    .width(Length::Fixed(2.0))
+                    .height(Fill)
+                    .style(theme::position_rail(selected))
+            ]
             .padding([2, 0])
             .height(Fill),
         )
@@ -651,9 +661,7 @@ impl canvas::Program<ConfigureMessage> for SpectrumBar {
                 if let Some(index) = self.hit(position.x, bounds.width) {
                     state.dragging = true;
                     state.remove_armed = false;
-                    Some(
-                        canvas::Action::publish(ConfigureMessage::SelectStop(index)).and_capture(),
-                    )
+                    Some(canvas::Action::publish(ConfigureMessage::SelectStop(index)).and_capture())
                 } else {
                     let percent = Self::percent_at(position.x, bounds.width);
                     Some(
@@ -662,9 +670,7 @@ impl canvas::Program<ConfigureMessage> for SpectrumBar {
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
-                let Some(point) = cursor.position() else {
-                    return None;
-                };
+                let point = cursor.position()?;
                 let can_remove = self.stops.len() > BatterySpectrum::MIN_STOPS;
                 let remove_armed = can_remove
                     && Self::outside_vertical_distance(point.y, bounds) >= STOP_REMOVE_DISTANCE;
@@ -845,20 +851,16 @@ impl canvas::Program<ConfigureMessage> for SvSquare {
         let size = bounds.size();
         let pure = theme::from_rgb(hsv_to_rgb(self.hue, 1.0, 1.0));
 
-        let saturation = canvas::gradient::Linear::new(
-            Point::new(0.0, 0.0),
-            Point::new(size.width, 0.0),
-        )
-        .add_stop(0.0, Color::WHITE)
-        .add_stop(1.0, pure);
+        let saturation =
+            canvas::gradient::Linear::new(Point::new(0.0, 0.0), Point::new(size.width, 0.0))
+                .add_stop(0.0, Color::WHITE)
+                .add_stop(1.0, pure);
         frame.fill_rectangle(Point::ORIGIN, size, saturation);
 
-        let value = canvas::gradient::Linear::new(
-            Point::new(0.0, 0.0),
-            Point::new(0.0, size.height),
-        )
-        .add_stop(0.0, Color::TRANSPARENT)
-        .add_stop(1.0, Color::BLACK);
+        let value =
+            canvas::gradient::Linear::new(Point::new(0.0, 0.0), Point::new(0.0, size.height))
+                .add_stop(0.0, Color::TRANSPARENT)
+                .add_stop(1.0, Color::BLACK);
         frame.fill_rectangle(Point::ORIGIN, size, value);
 
         let cursor_point = Point::new(

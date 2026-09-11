@@ -61,8 +61,5 @@ where
 
 /// Renders nothing when the toast window is open but idle between messages.
 pub fn empty<'a, Message: 'a>() -> Element<'a, Message> {
-    container(space())
-        .width(Shrink)
-        .height(Shrink)
-        .into()
+    container(space()).width(Shrink).height(Shrink).into()
 }

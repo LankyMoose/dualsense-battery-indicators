@@ -51,15 +51,18 @@ impl NotifyTracker {
             })
             .collect();
         if prefs.notify_disconnect {
-            events.extend(previous.iter().filter(|controller| {
-                !next.iter().any(|next| next.serial == controller.serial)
-            }).map(|controller| {
-                format_event(
-                    controller,
-                    NotifyKind::Disconnect,
-                    nickname(&controller.serial).as_deref(),
-                )
-            }));
+            events.extend(
+                previous
+                    .iter()
+                    .filter(|controller| !next.iter().any(|next| next.serial == controller.serial))
+                    .map(|controller| {
+                        format_event(
+                            controller,
+                            NotifyKind::Disconnect,
+                            nickname(&controller.serial).as_deref(),
+                        )
+                    }),
+            );
         }
         events
     }
@@ -238,7 +241,11 @@ mod tests {
         let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
         let mut preferences = prefs(true, true, false);
         preferences.notify_disconnect = false;
-        assert!(tracker.evaluate(&connected, &[], &preferences, |_| None).is_empty());
+        assert!(
+            tracker
+                .evaluate(&connected, &[], &preferences, |_| None)
+                .is_empty()
+        );
     }
 
     #[test]

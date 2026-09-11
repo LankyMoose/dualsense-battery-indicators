@@ -72,11 +72,11 @@ impl Prefs {
 
     pub fn save(&self) {
         let path = prefs_path();
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                app_log::warn(format!("failed to create prefs dir: {err}"));
-                return;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            app_log::warn(format!("failed to create prefs dir: {err}"));
+            return;
         }
         match serde_json::to_vec_pretty(self) {
             Ok(bytes) => {

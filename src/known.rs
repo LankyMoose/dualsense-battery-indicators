@@ -103,11 +103,11 @@ impl KnownControllers {
             return;
         }
         let path = store_path();
-        if let Some(parent) = path.parent() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                app_log::warn(format!("failed to create controllers dir: {err}"));
-                return;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            app_log::warn(format!("failed to create controllers dir: {err}"));
+            return;
         }
 
         let mut controllers: Vec<_> = self.by_serial.values().cloned().collect();
@@ -204,10 +204,10 @@ impl KnownControllers {
             if !Self::is_storable_serial(&controller.serial) {
                 continue;
             }
-            if let Some(record) = self.by_serial.get_mut(&controller.serial) {
-                if record.update_from_status(controller) {
-                    changed = true;
-                }
+            if let Some(record) = self.by_serial.get_mut(&controller.serial)
+                && record.update_from_status(controller)
+            {
+                changed = true;
             }
         }
         if changed {

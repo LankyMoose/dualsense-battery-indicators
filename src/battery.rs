@@ -576,12 +576,16 @@ mod tests {
         assert_eq!(report.len(), BT_CONTROL_FEATURE_SIZE);
         assert_eq!(report[0], BT_CONTROL_FEATURE_REPORT);
         assert_eq!(report[1], BT_CONTROL_OFF);
-        assert!(report[2..BT_CONTROL_FEATURE_SIZE - 4]
-            .iter()
-            .all(|&b| b == 0));
-        assert!(report[BT_CONTROL_FEATURE_SIZE - 4..]
-            .iter()
-            .any(|&b| b != 0));
+        assert!(
+            report[2..BT_CONTROL_FEATURE_SIZE - 4]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert!(
+            report[BT_CONTROL_FEATURE_SIZE - 4..]
+                .iter()
+                .any(|&b| b != 0)
+        );
 
         let mut expected = vec![0u8; BT_CONTROL_FEATURE_SIZE];
         expected[0] = BT_CONTROL_FEATURE_REPORT;

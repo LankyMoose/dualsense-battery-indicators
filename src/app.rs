@@ -25,8 +25,8 @@ use crate::theme;
 use crate::toast::ToastMessage;
 use crate::toast_view;
 
-use iced::futures::channel::{mpsc, oneshot};
 use iced::futures::Stream;
+use iced::futures::channel::{mpsc, oneshot};
 use iced::widget::{container, operation, space};
 use iced::{Element, Point, Size, Subscription, Task, Theme, stream, window};
 
@@ -263,9 +263,7 @@ impl App {
         let mut subscriptions = vec![
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
-                iced::Event::Window(window::Event::Unfocused) => {
-                    Some(Message::WindowUnfocused(id))
-                }
+                iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowUnfocused(id)),
                 _ => None,
             }),
             iced::time::every(PRESENCE_INTERVAL).map(|_| Message::Tick),
@@ -273,11 +271,10 @@ impl App {
         ];
 
         if self.toast_message.is_some() {
-            subscriptions.push(
-                Subscription::run_with(self.toast_generation, |generation| {
-                    escape_hotkey(*generation)
-                }),
-            );
+            subscriptions.push(Subscription::run_with(
+                self.toast_generation,
+                |generation| escape_hotkey(*generation),
+            ));
         }
 
         if self.toast_animating() {
@@ -521,12 +518,11 @@ impl App {
         let mut events = Vec::new();
         if controllers_changed {
             let previous = std::mem::replace(&mut self.controllers, controllers);
-            events = self.notify.evaluate(
-                &previous,
-                &self.controllers,
-                &self.prefs,
-                |serial| self.known.nickname(serial).map(str::to_string),
-            );
+            events = self
+                .notify
+                .evaluate(&previous, &self.controllers, &self.prefs, |serial| {
+                    self.known.nickname(serial).map(str::to_string)
+                });
             self.sync_low_battery();
         }
 
@@ -756,9 +752,7 @@ impl App {
                 self.apply_spectrum_maybe(next)
             }
             ConfigureMessage::SaturationValueChanged(saturation, value) => {
-                let next = self
-                    .configure_state
-                    .set_saturation_value(saturation, value);
+                let next = self.configure_state.set_saturation_value(saturation, value);
                 self.apply_spectrum_maybe(next)
             }
             ConfigureMessage::ResetSpectrum => {
@@ -833,7 +827,9 @@ impl App {
 
     fn power_off(&self, serial: &str) {
         if is_emulated_serial(serial) {
-            app_log::info(format!("power-off skipped for emulated controller {serial}"));
+            app_log::info(format!(
+                "power-off skipped for emulated controller {serial}"
+            ));
             return;
         }
 
@@ -953,7 +949,7 @@ impl App {
         });
 
         self.toast_window = Some(id);
-        open.then(|id| place_toast(id)).chain(expire)
+        open.then(place_toast).chain(expire)
     }
 
     fn dismiss_toast(&mut self) -> Task<Message> {
@@ -1007,8 +1003,7 @@ impl App {
     fn toast_animating(&self) -> bool {
         self.toast_message.is_some()
             && self.toast_placement.is_some()
-            && (self.toast_dismissing
-                || self.toast_anim_started.elapsed() < TOAST_SLIDE_DURATION)
+            && (self.toast_dismissing || self.toast_anim_started.elapsed() < TOAST_SLIDE_DURATION)
     }
 }
 
@@ -1033,12 +1028,7 @@ fn place_toast(id: window::Id) -> Task<Message> {
     window::monitor_size(id).map(move |monitor| Message::PlaceToast { id, monitor })
 }
 
-fn popup_position(
-    anchor: TrayAnchor,
-    scale: f32,
-    monitor: Option<Size>,
-    size: Size,
-) -> Point {
+fn popup_position(anchor: TrayAnchor, scale: f32, monitor: Option<Size>, size: Size) -> Point {
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let anchor_x = anchor.x / scale;
     let anchor_y = anchor.y / scale;
@@ -1107,9 +1097,9 @@ fn toast_placement_in(position: ToastPosition, area: ToastArea) -> ToastPlacemen
         ToastPosition::TopLeft | ToastPosition::TopCenter | ToastPosition::TopRight => {
             area.y - toast_view::HEIGHT
         }
-        ToastPosition::BottomLeft
-        | ToastPosition::BottomCenter
-        | ToastPosition::BottomRight => area.y + area.height,
+        ToastPosition::BottomLeft | ToastPosition::BottomCenter | ToastPosition::BottomRight => {
+            area.y + area.height
+        }
     };
     ToastPlacement {
         x: target.x,
@@ -1137,9 +1127,9 @@ fn toast_position_in(position: ToastPosition, area: ToastArea) -> Point {
         ToastPosition::TopLeft | ToastPosition::TopCenter | ToastPosition::TopRight => {
             area.y + margin
         }
-        ToastPosition::BottomLeft
-        | ToastPosition::BottomCenter
-        | ToastPosition::BottomRight => area.y + area.height - height - margin,
+        ToastPosition::BottomLeft | ToastPosition::BottomCenter | ToastPosition::BottomRight => {
+            area.y + area.height - height - margin
+        }
     };
 
     Point::new(x.max(0.0), y.max(0.0))
@@ -1163,10 +1153,8 @@ fn ease_out_cubic(progress: f32) -> f32 {
 #[cfg(windows)]
 fn primary_toast_area() -> Option<ToastArea> {
     unsafe {
-        let monitor = win32::MonitorFromPoint(
-            win32::Point { x: 0, y: 0 },
-            win32::MONITOR_DEFAULTTOPRIMARY,
-        );
+        let monitor =
+            win32::MonitorFromPoint(win32::Point { x: 0, y: 0 }, win32::MONITOR_DEFAULTTOPRIMARY);
         if monitor == 0 {
             return None;
         }
@@ -1191,26 +1179,14 @@ fn primary_toast_area() -> Option<ToastArea> {
             && foreground_rect.right >= info.monitor.right - 2
             && foreground_rect.bottom >= info.monitor.bottom - 2;
 
-        let area = if fullscreen {
-            info.monitor
-        } else {
-            info.work
-        };
+        let area = if fullscreen { info.monitor } else { info.work };
 
         let mut dpi_x = 0u32;
         let mut dpi_y = 0u32;
-        let dpi_ok = win32::GetDpiForMonitor(
-            monitor,
-            win32::MDT_EFFECTIVE_DPI,
-            &mut dpi_x,
-            &mut dpi_y,
-        ) == 0
-            && dpi_x > 0;
-        let scale = if dpi_ok {
-            dpi_x as f32 / 96.0
-        } else {
-            1.0
-        };
+        let dpi_ok =
+            win32::GetDpiForMonitor(monitor, win32::MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0
+                && dpi_x > 0;
+        let scale = if dpi_ok { dpi_x as f32 / 96.0 } else { 1.0 };
 
         Some(ToastArea {
             x: area.left as f32 / scale,
@@ -1287,9 +1263,7 @@ fn tray_events() -> impl Stream<Item = Message> {
                     width: rect.size.width as f32,
                     height: rect.size.height as f32,
                 };
-                let _ = icon_output
-                    .clone()
-                    .try_send(Message::TrayLeftClick(anchor));
+                let _ = icon_output.clone().try_send(Message::TrayLeftClick(anchor));
             }
         }));
 

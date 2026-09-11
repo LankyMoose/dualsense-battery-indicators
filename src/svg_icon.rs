@@ -129,10 +129,10 @@ pub fn rasterize(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>, Str
         size,
         colors: colors.clone(),
     };
-    if let Ok(cache) = RASTER_CACHE.lock() {
-        if let Some(hit) = cache.get(&key) {
-            return Ok(hit.clone());
-        }
+    if let Ok(cache) = RASTER_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return Ok(hit.clone());
     }
 
     let rgba = rasterize_uncached(svg, size, colors)?;
@@ -147,8 +147,8 @@ fn rasterize_uncached(svg: &str, size: u32, colors: &ColorMap) -> Result<Vec<u8>
     let tree = usvg::Tree::from_str(&tinted, &usvg::Options::default())
         .map_err(|e| format!("parse SVG: {e}"))?;
 
-    let mut pixmap =
-        tiny_skia::Pixmap::new(size, size).ok_or_else(|| format!("allocate {size}x{size} pixmap"))?;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)
+        .ok_or_else(|| format!("allocate {size}x{size} pixmap"))?;
 
     let svg_size = tree.size();
     let svg_w = svg_size.width().max(1.0);

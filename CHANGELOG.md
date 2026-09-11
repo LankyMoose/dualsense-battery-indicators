@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Overlay toasts show a circular battery outline filled to the current percent, with the percentage in large type inside the ring.
 - Controller popup rows use the same circular percent readout in place of the DualSense glyph.
 
+### Changed
+
+- Configure Settings uses a fixed left-hand tab list with content beside it instead of a single-open accordion.
+
 ## [0.1.14] - 2026-09-11
 
 ### Added

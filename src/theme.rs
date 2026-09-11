@@ -9,6 +9,10 @@ use iced::{Background, Border, Color, Shadow, Theme};
 use std::sync::LazyLock;
 
 pub const BG: Color = rgb(23, 26, 33);
+/// Configure content area: a step darker than the window chrome.
+pub const BODY: Color = rgb(16, 18, 24);
+/// Configure sidebar: near body, darker than [`PANEL`].
+pub const SIDEBAR: Color = rgb(20, 23, 29);
 pub const PANEL: Color = rgb(32, 37, 45);
 pub const PANEL_HOVER: Color = rgb(40, 46, 56);
 pub const LINE: Color = rgb(55, 63, 75);
@@ -99,6 +103,7 @@ pub fn root(_theme: &Theme) -> container::Style {
 }
 
 /// Raised surface with a hairline border.
+#[allow(dead_code)]
 pub fn panel(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(PANEL)),
@@ -121,6 +126,29 @@ pub fn surface(_theme: &Theme) -> container::Style {
             color: Color::TRANSPARENT,
             width: 0.0,
             radius: RADIUS_SM.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Configure content area below the title bar.
+pub fn configure_body(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BODY)),
+        text_color: Some(INK),
+        ..container::Style::default()
+    }
+}
+
+/// Configure sidebar: near-body fill with a hairline edge.
+pub fn sidebar(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(SIDEBAR)),
+        text_color: Some(INK),
+        border: Border {
+            color: LINE,
+            width: 1.0,
+            radius: 0.0.into(),
         },
         ..container::Style::default()
     }
@@ -169,6 +197,14 @@ pub fn position_rail(selected: bool) -> impl Fn(&Theme) -> container::Style {
 pub fn divider(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(LINE)),
+        ..container::Style::default()
+    }
+}
+
+/// Hairline under the configure title bar (slightly lighter than [`LINE`]).
+pub fn configure_header_rule(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(rgb(68, 76, 88))),
         ..container::Style::default()
     }
 }
@@ -245,22 +281,19 @@ pub fn ghost(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Accordion section header.
-pub fn section(_theme: &Theme, status: button::Status) -> button::Style {
-    let style = match status {
-        button::Status::Active => button_base(Some(PANEL), INK, RADIUS_SM),
-        button::Status::Hovered | button::Status::Pressed => {
-            button_base(Some(PANEL_HOVER), INK, RADIUS_SM)
-        }
-        button::Status::Disabled => button_base(Some(PANEL), DIM, RADIUS_SM),
-    };
-    button::Style {
-        border: Border {
-            color: LINE,
-            width: 1.0,
-            radius: RADIUS_SM.into(),
-        },
-        ..style
+/// Vertical tab in the configure sidebar.
+pub fn tab(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let (fill, ink) = match (selected, status) {
+            (true, button::Status::Disabled) => (Some(alpha(ACCENT, 0.12)), DIM),
+            (true, _) => (Some(alpha(ACCENT, 0.28)), INK),
+            (false, button::Status::Hovered) | (false, button::Status::Pressed) => {
+                (Some(PANEL_HOVER), INK)
+            }
+            (false, button::Status::Disabled) => (None, DIM),
+            (false, button::Status::Active) => (None, MUTED),
+        };
+        button_base(fill, ink, RADIUS_SM)
     }
 }
 

@@ -8,22 +8,27 @@ pub struct ToastMessage {
     pub heading: String,
     pub body: String,
     pub accent: Rgb,
+    pub percent: u8,
 }
 
 impl ToastMessage {
     pub fn from_notification(event: NotifyEvent, spectrum: BatterySpectrum) -> Self {
+        let percent = event.percent.unwrap_or(100).min(100);
         Self {
             heading: event.heading,
             body: event.body,
-            accent: spectrum.color_at_percent(event.percent.unwrap_or(100)),
+            accent: spectrum.color_at_percent(percent),
+            percent,
         }
     }
 
-    pub fn preview(accent: Rgb) -> Self {
+    pub fn preview(spectrum: &BatterySpectrum) -> Self {
+        const PERCENT: u8 = 70;
         Self {
             heading: "DualSense Battery Indicators".to_string(),
             body: "Toasts will appear here".to_string(),
-            accent,
+            accent: spectrum.color_at_percent(PERCENT),
+            percent: PERCENT,
         }
     }
 }
@@ -55,13 +60,19 @@ mod tests {
         let message =
             ToastMessage::from_notification(events[0].clone(), BatterySpectrum::default());
         assert!(message.heading.contains("DualSense"));
-        assert!(message.body.contains("40%"));
+        assert_eq!(message.percent, 40);
+        assert_eq!(
+            message.accent,
+            BatterySpectrum::default().color_at_percent(40)
+        );
     }
 
     #[test]
     fn preview_has_stable_copy() {
-        let message = ToastMessage::preview(Rgb::new(1, 2, 3));
-        assert_eq!(message.accent, Rgb::new(1, 2, 3));
+        let spectrum = BatterySpectrum::default();
+        let message = ToastMessage::preview(&spectrum);
+        assert_eq!(message.percent, 70);
+        assert_eq!(message.accent, spectrum.color_at_percent(70));
         assert!(!message.heading.is_empty());
         assert!(!message.body.is_empty());
     }

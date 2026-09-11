@@ -218,32 +218,6 @@ pub fn rail(accent: Color) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-/// Battery meter track.
-pub fn meter_track(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(alpha(Color::BLACK, 0.35))),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: 3.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Battery meter fill, colored by the active spectrum.
-pub fn meter_fill(color: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_theme| container::Style {
-        background: Some(Background::Color(color)),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: 3.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------

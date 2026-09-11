@@ -5,50 +5,64 @@ use iced::mouse;
 use iced::widget::canvas as canvas_widget;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::{
-    Color, Degrees, Element, Length, Pixels, Radians, Rectangle, Renderer, Theme, alignment,
+    Color, Degrees, Element, Length, Pixels, Point, Radians, Rectangle, Renderer, Theme, alignment,
 };
 
 /// Reference size used by overlay toasts; stroke and type scale from this.
 pub const TOAST_SIZE: f32 = 60.0;
 /// Size that fits a controller-popup row.
-pub const POPUP_SIZE: f32 = 52.0;
+pub const POPUP_SIZE: f32 = 56.0;
 
 const REF_SIZE: f32 = 60.0;
 const REF_STROKE: f32 = 3.5;
 const REF_TEXT: f32 = 20.0;
 const REF_TEXT_FULL: f32 = 16.0;
+const REF_ETA_TEXT: f32 = 12.0;
 
 /// Draws a circular outline filled clockwise to `percent`, with the value centered inside.
-pub fn percent_ring<'a, Message: 'a>(percent: u8, color: Color, size: f32) -> Element<'a, Message> {
+/// When `eta` is set (e.g. `est. 8h`), it sits under the percent inside the ring.
+pub fn percent_ring<'a, Message: 'a>(
+    percent: u8,
+    color: Color,
+    size: f32,
+    eta: Option<String>,
+) -> Element<'a, Message> {
     canvas_widget(PercentRing {
         percent,
         color,
         size,
+        eta,
     })
     .width(Length::Fixed(size))
     .height(Length::Fixed(size))
     .into()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PercentRing {
     percent: u8,
     color: Color,
     size: f32,
+    eta: Option<String>,
 }
 
 impl PercentRing {
-    fn stroke_width(self) -> f32 {
+    fn stroke_width(&self) -> f32 {
         REF_STROKE * (self.size / REF_SIZE)
     }
 
-    fn text_size(self, percent: u8) -> f32 {
+    fn text_size(&self, percent: u8) -> f32 {
         let base = if percent >= 100 {
             REF_TEXT_FULL
         } else {
             REF_TEXT
         };
-        base * (self.size / REF_SIZE)
+        let scale = if self.eta.is_some() { 0.82 } else { 1.0 };
+        base * (self.size / REF_SIZE) * scale
+    }
+
+    fn eta_text_size(&self) -> f32 {
+        REF_ETA_TEXT * (self.size / REF_SIZE)
     }
 }
 
@@ -101,15 +115,40 @@ impl<Message> canvas::Program<Message> for PercentRing {
             }
         }
 
+        let percent_size = self.text_size(percent);
+        let (percent_pos, eta_pos) = if self.eta.is_some() {
+            let gap = percent_size * 0.75;
+            (
+                Point::new(center.x, center.y - gap * 0.42),
+                Some(Point::new(center.x, center.y + gap * 0.92)),
+            )
+        } else {
+            (center, None)
+        };
+
         frame.fill_text(canvas::Text {
             content: format!("{percent}%"),
-            position: center,
+            position: percent_pos,
             color: theme::INK,
-            size: Pixels(self.text_size(percent)),
+            size: Pixels(percent_size),
             align_x: alignment::Horizontal::Center.into(),
             align_y: alignment::Vertical::Center,
             ..canvas::Text::default()
         });
+
+        if let (Some(eta), Some(pos)) = (self.eta.as_ref(), eta_pos) {
+            // Between MUTED and INK — slightly closer to muted for contrast with %.
+            let eta_color = theme::rgb(200, 206, 214);
+            frame.fill_text(canvas::Text {
+                content: eta.clone(),
+                position: pos,
+                color: eta_color,
+                size: Pixels(self.eta_text_size()),
+                align_x: alignment::Horizontal::Center.into(),
+                align_y: alignment::Vertical::Center,
+                ..canvas::Text::default()
+            });
+        }
 
         vec![frame.into_geometry()]
     }

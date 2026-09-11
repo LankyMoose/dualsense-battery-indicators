@@ -6,10 +6,12 @@
 use crate::app_log;
 #[cfg(windows)]
 use crate::autostart;
+use crate::analytics::{self, AnalyticsStore};
 use crate::battery::{self, ControllerStatus};
 use crate::color::{self, BatterySpectrum, color_for_battery_percent};
 use crate::configure_view::{
-    self, ConfigureMessage, ConfigureSettings, ConfigureState, NotificationSetting,
+    self, AnalyticsPadRow, AnalyticsPanel, ConfigureMessage, ConfigureSettings, ConfigureState,
+    NotificationSetting,
 };
 #[cfg(feature = "dev-emulate")]
 use crate::emulate::{self, Preset};
@@ -115,6 +117,7 @@ pub struct App {
     prefs: Prefs,
     known: KnownControllers,
     notify: NotifyTracker,
+    analytics: AnalyticsStore,
 
     controllers: Vec<ControllerStatus>,
     /// Last HID presence snapshot (serials), used to detect connect/disconnect.
@@ -137,6 +140,8 @@ pub struct App {
 
     configure_window: Option<window::Id>,
     configure_state: ConfigureState,
+    /// Snapshot for the Analytics settings tab (refreshed with controller/analytics changes).
+    analytics_panel: AnalyticsPanel,
 
     toast_window: Option<window::Id>,
     toast_message: Option<ToastMessage>,
@@ -150,6 +155,9 @@ pub struct App {
     dev_mode: bool,
     #[cfg(feature = "dev-emulate")]
     emulating: bool,
+    /// Percent to restore after AnalyticsPause (list is empty while paused).
+    #[cfg(feature = "dev-emulate")]
+    dev_paused_percent: Option<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +200,7 @@ impl App {
     fn boot(#[cfg(feature = "dev-emulate")] dev_mode: bool) -> (Self, Task<Message>) {
         let prefs = Prefs::load();
         let known = KnownControllers::load();
+        let analytics = AnalyticsStore::load();
         color::set_active_spectrum(prefs.spectrum.clone());
 
         #[cfg(windows)]
@@ -207,6 +216,7 @@ impl App {
             prefs,
             known,
             notify: NotifyTracker::new(),
+            analytics,
             controllers: Vec::new(),
             last_discovered: battery::list_controller_serials().unwrap_or_default(),
             last_battery_poll: Instant::now(),
@@ -220,6 +230,7 @@ impl App {
             popup_rows: Vec::new(),
             configure_window: None,
             configure_state,
+            analytics_panel: AnalyticsPanel::default(),
             toast_window: None,
             toast_message: None,
             toast_queue: VecDeque::new(),
@@ -231,6 +242,8 @@ impl App {
             dev_mode,
             #[cfg(feature = "dev-emulate")]
             emulating: false,
+            #[cfg(feature = "dev-emulate")]
+            dev_paused_percent: None,
         };
 
         // Show the tray immediately, then poll in the background so a stuck HID
@@ -238,6 +251,7 @@ impl App {
         app.create_tray();
         app.sync_popup_rows();
         app.sync_low_battery();
+        app.refresh_analytics_panel();
 
         let task = app.request_refresh();
         (app, task)
@@ -291,8 +305,12 @@ impl App {
         }
 
         if Some(window) == self.configure_window {
-            return configure_view::view(&self.configure_state, &self.configure_settings())
-                .map(Message::Configure);
+            return configure_view::view(
+                &self.configure_state,
+                &self.configure_settings(),
+                &self.analytics_panel,
+            )
+            .map(Message::Configure);
         }
 
         if Some(window) == self.toast_window {
@@ -511,7 +529,29 @@ impl App {
     fn apply_controllers(&mut self, controllers: Vec<ControllerStatus>) -> Task<Message> {
         let known_changed = self.known.sync_from_live(&controllers);
         let controllers_changed = !controllers_equivalent(&self.controllers, &controllers);
+
+        // Analytics heartbeat runs even when the snapshot is unchanged so open
+        // sessions accumulate active time between percent/state edges.
+        if self.prefs.analytics_enabled {
+            let previous = self.controllers.clone();
+            let next = if controllers_changed {
+                controllers.as_slice()
+            } else {
+                self.controllers.as_slice()
+            };
+            let keep = |serial: &str| {
+                self.known.is_remembered(serial) || self.known.nickname(serial).is_some()
+            };
+            self.analytics
+                .observe(&previous, next, true, keep, std::time::SystemTime::now());
+            self.analytics.save();
+            self.refresh_analytics_panel();
+        }
+
         if !controllers_changed && !known_changed {
+            if self.prefs.analytics_enabled {
+                self.sync_popup_rows();
+            }
             return Task::none();
         }
 
@@ -552,6 +592,13 @@ impl App {
         let threshold = self.prefs.low_battery_percent;
         let mut rows = Vec::new();
         for controller in &self.controllers {
+            let eta = if self.prefs.analytics_enabled {
+                self.analytics
+                    .eta_for(controller)
+                    .map(analytics::format_eta_ring)
+            } else {
+                None
+            };
             rows.push(ControllerRow::connected(
                 controller,
                 self.known.is_remembered(&controller.serial),
@@ -559,6 +606,7 @@ impl App {
                     && !is_emulated_serial(&controller.serial),
                 self.known.nickname(&controller.serial).map(str::to_string),
                 threshold,
+                eta,
             ));
         }
         for controller in self.known.remembered_disconnected(&self.controllers) {
@@ -662,6 +710,7 @@ impl App {
             notify_disconnect: self.prefs.notify_disconnect,
             low_battery_percent: self.prefs.low_battery_percent,
             toast_position: self.prefs.toast_position,
+            analytics_enabled: self.prefs.analytics_enabled,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
             show_developer: {
@@ -675,6 +724,44 @@ impl App {
                 }
             },
         }
+    }
+
+    fn analytics_panel(&self) -> AnalyticsPanel {
+        if !self.prefs.analytics_enabled {
+            return AnalyticsPanel::default();
+        }
+        let rows = self
+            .analytics
+            .panel_rows()
+            .iter()
+            .map(|row| {
+                let label = self
+                    .known
+                    .nickname(&row.serial)
+                    .map(str::to_string)
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        self.controllers
+                            .iter()
+                            .find(|c| c.serial == row.serial)
+                            .map(|c| c.product.to_string())
+                    })
+                    .unwrap_or_else(|| {
+                        let serial = &row.serial;
+                        if serial.len() > 8 {
+                            format!("Pad …{}", &serial[serial.len() - 6..])
+                        } else {
+                            serial.clone()
+                        }
+                    });
+                AnalyticsPadRow::from_analytics(row, label)
+            })
+            .collect();
+        AnalyticsPanel { rows }
+    }
+
+    fn refresh_analytics_panel(&mut self) {
+        self.analytics_panel = self.analytics_panel();
     }
 
     fn open_configure(&mut self) -> Task<Message> {
@@ -737,6 +824,19 @@ impl App {
                 self.prefs.toast_position = position;
                 self.prefs.save();
                 self.show_position_preview()
+            }
+            ConfigureMessage::SetAnalyticsEnabled(enabled) => {
+                self.prefs.analytics_enabled = enabled;
+                self.prefs.save();
+                self.refresh_analytics_panel();
+                self.sync_popup_rows();
+                Task::none()
+            }
+            ConfigureMessage::ClearAnalytics => {
+                self.analytics.clear();
+                self.refresh_analytics_panel();
+                self.sync_popup_rows();
+                Task::none()
             }
             #[cfg(windows)]
             ConfigureMessage::SetAutostart(enabled) => {
@@ -897,13 +997,95 @@ impl App {
     fn apply_dev_preset(&mut self, preset: Preset) -> Task<Message> {
         if preset == Preset::Clear {
             self.emulating = false;
+            self.dev_paused_percent = None;
             let task = self.apply_controllers(Vec::new());
             self.last_battery_poll = Instant::now();
             return task.chain(self.request_refresh());
         }
 
-        let next = emulate::apply_preset(preset, &self.controllers);
+        if preset.is_analytics() && !self.prefs.analytics_enabled {
+            self.prefs.analytics_enabled = true;
+            self.prefs.save();
+            app_log::info("analytics enabled for developer preset");
+        }
+
+        // Credit active time before state edges that may finish a cycle.
+        if matches!(
+            preset,
+            Preset::AnalyticsChargeAdvance
+                | Preset::AnalyticsDrainAdvance
+                | Preset::AnalyticsPlugMidDrain
+        ) {
+            let credit = if preset == Preset::AnalyticsChargeAdvance {
+                Duration::from_secs(15 * 60)
+            } else {
+                Duration::from_secs(25 * 60)
+            };
+            self.analytics
+                .dev_credit_active(emulate::PRIMARY_SERIAL, credit);
+        }
+
+        if preset == Preset::AnalyticsSeedEstimates {
+            self.analytics
+                .dev_seed_estimates(emulate::PRIMARY_SERIAL);
+            self.analytics.save();
+            self.refresh_analytics_panel();
+        }
+
+        if preset == Preset::AnalyticsPause {
+            self.dev_paused_percent = self
+                .controllers
+                .iter()
+                .find(|c| c.serial == emulate::PRIMARY_SERIAL)
+                .map(|c| c.percent)
+                .or(self.dev_paused_percent);
+        }
+
+        // Unplug-from-full needs a Complete → Discharging edge.
+        let ensure_complete = preset == Preset::AnalyticsUnplugFull
+            && !self.controllers.iter().any(|c| {
+                c.serial == emulate::PRIMARY_SERIAL && c.state == battery::PowerState::Complete
+            });
+
+        let next = if preset == Preset::AnalyticsResume {
+            let percent = self
+                .dev_paused_percent
+                .or_else(|| {
+                    self.analytics
+                        .open_session(emulate::PRIMARY_SERIAL)
+                        .map(|o| o.last_percent)
+                })
+                .unwrap_or(60);
+            vec![ControllerStatus {
+                index: 1,
+                product: "DualSense",
+                connection: "Bluetooth",
+                serial: emulate::PRIMARY_SERIAL.to_string(),
+                percent,
+                state: battery::PowerState::Discharging,
+            }]
+        } else {
+            emulate::apply_preset(preset, &self.controllers)
+        };
+
         self.emulating = true;
+        self.analytics.save();
+        self.refresh_analytics_panel();
+
+        if ensure_complete {
+            let complete = vec![ControllerStatus {
+                index: 1,
+                product: "DualSense",
+                connection: "USB",
+                serial: emulate::PRIMARY_SERIAL.to_string(),
+                percent: 100,
+                state: battery::PowerState::Complete,
+            }];
+            let first = self.apply_controllers(complete);
+            let second = self.apply_controllers(next);
+            return first.chain(second);
+        }
+
         self.apply_controllers(next)
     }
 
@@ -913,12 +1095,31 @@ impl App {
 
     fn queue_notifications(&mut self, events: Vec<NotifyEvent>) -> Task<Message> {
         for event in events {
+            let eta = self.toast_eta_for(&event);
             self.toast_queue.push_back(ToastMessage::from_notification(
                 event,
                 self.prefs.spectrum.clone(),
+                eta,
             ));
         }
         self.show_next_toast()
+    }
+
+    fn toast_eta_for(&self, event: &NotifyEvent) -> Option<String> {
+        if !self.prefs.analytics_enabled {
+            return None;
+        }
+        let status = ControllerStatus {
+            index: 0,
+            product: "DualSense",
+            connection: "",
+            serial: event.serial.clone(),
+            percent: event.percent.unwrap_or(0),
+            state: event.state,
+        };
+        self.analytics
+            .eta_for(&status)
+            .map(analytics::format_eta_ring)
     }
 
     fn show_position_preview(&mut self) -> Task<Message> {

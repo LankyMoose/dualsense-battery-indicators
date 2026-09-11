@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod analytics;
 mod app;
 mod app_log;
 mod app_meta;

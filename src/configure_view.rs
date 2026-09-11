@@ -1,6 +1,9 @@
 //! Configure window UI: sidebar tabs, notification toggles, toast
-//! position picker and the lightbar spectrum editor.
+//! position picker, lightbar spectrum editor, and battery analytics.
 
+use crate::analytics::{
+    ControllerAnalytics, OpenSession, SessionKind, Waypoint, WaypointKind, format_duration_short,
+};
 use crate::app_meta::{DISPLAY_NAME, PKG_VERSION};
 use crate::color::{BatterySpectrum, GradientStop, hsv_to_rgb};
 #[cfg(feature = "dev-emulate")]
@@ -9,7 +12,7 @@ use crate::prefs::{LOW_BATTERY_PERCENT_MAX, LOW_BATTERY_PERCENT_MIN, ToastPositi
 use crate::svg_icon;
 use crate::theme;
 use iced::mouse;
-use iced::widget::canvas::{self, Frame, Geometry, Path};
+use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke};
 use iced::widget::{
     Column, Row, button, canvas as canvas_widget, checkbox, column, container, mouse_area, row,
     scrollable, slider, space, svg, text,
@@ -31,6 +34,7 @@ const CONTENT_WIDTH: f32 = WIDTH - SIDEBAR_WIDTH - CONTENT_PADDING * 3.0;
 
 const BAR_HEIGHT: f32 = 44.0;
 const SV_HEIGHT: f32 = 112.0;
+const TIMELINE_HEIGHT: f32 = 120.0;
 const HANDLE_WIDTH: f32 = 10.0;
 const HIT_RADIUS: f32 = 12.0;
 /// Vertical distance outside the bar that arms stop removal (matches softbuffer UI).
@@ -47,6 +51,7 @@ pub enum Section {
     Notifications,
     ToastPosition,
     Lightbar,
+    Analytics,
     #[cfg(feature = "dev-emulate")]
     Developer,
 }
@@ -58,6 +63,7 @@ impl Section {
             Self::Notifications => "Notifications",
             Self::ToastPosition => "Toast position",
             Self::Lightbar => "Lightbar colors",
+            Self::Analytics => "Analytics",
             #[cfg(feature = "dev-emulate")]
             Self::Developer => "Developer",
         }
@@ -71,6 +77,7 @@ impl Section {
                 Self::Notifications,
                 Self::ToastPosition,
                 Self::Lightbar,
+                Self::Analytics,
             ];
             if show_developer {
                 sections.push(Self::Developer);
@@ -85,6 +92,7 @@ impl Section {
                 Self::Notifications,
                 Self::ToastPosition,
                 Self::Lightbar,
+                Self::Analytics,
             ]
         }
     }
@@ -107,9 +115,35 @@ pub struct ConfigureSettings {
     pub notify_disconnect: bool,
     pub low_battery_percent: u8,
     pub toast_position: ToastPosition,
+    pub analytics_enabled: bool,
     #[cfg(windows)]
     pub autostart: bool,
     pub show_developer: bool,
+}
+
+/// Analytics tab content (owned snapshot; not `Copy` because of open sessions).
+#[derive(Debug, Clone, Default)]
+pub struct AnalyticsPanel {
+    pub rows: Vec<AnalyticsPadRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalyticsPadRow {
+    pub label: String,
+    pub typical_charge: Option<String>,
+    pub typical_play: Option<String>,
+    pub open: Option<OpenSession>,
+}
+
+impl AnalyticsPadRow {
+    pub fn from_analytics(row: &ControllerAnalytics, label: String) -> Self {
+        Self {
+            label,
+            typical_charge: row.typical_charge.map(format_duration_short),
+            typical_play: row.typical_play.map(format_duration_short),
+            open: row.open.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +152,8 @@ pub enum ConfigureMessage {
     SetNotification(NotificationSetting, bool),
     SetLowBatteryPercent(u8),
     SetToastPosition(ToastPosition),
+    SetAnalyticsEnabled(bool),
+    ClearAnalytics,
     #[cfg(windows)]
     SetAutostart(bool),
     SelectStop(usize),
@@ -323,9 +359,10 @@ pub fn suggested_stop_percent(spectrum: &BatterySpectrum) -> u8 {
 pub fn view<'a>(
     state: &'a ConfigureState,
     settings: &ConfigureSettings,
+    analytics: &'a AnalyticsPanel,
 ) -> Element<'a, ConfigureMessage> {
     let title = mouse_area(
-        container(text("Settings").size(15.0).color(theme::INK))
+        container(text("Settings").size(16.0).color(theme::INK))
             .width(Fill)
             .height(Fill)
             .align_y(Alignment::Center),
@@ -352,7 +389,7 @@ pub fn view<'a>(
     .height(Length::Fixed(HEADER_HEIGHT));
 
     let sidebar = tab_list(state.section, settings.show_developer);
-    let content = section_content(state, settings);
+    let content = section_content(state, settings, analytics);
 
     let body = row![
         container(sidebar)
@@ -409,7 +446,7 @@ fn tab_list<'a>(active: Section, show_developer: bool) -> Element<'a, ConfigureM
                             .width(Length::Fixed(2.0))
                             .height(Length::Fixed(12.0))
                             .style(theme::position_rail(selected)),
-                        text(section.title()).size(12.0).width(Fill),
+                        text(section.title()).size(13.0).width(Fill),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -426,6 +463,7 @@ fn tab_list<'a>(active: Section, show_developer: bool) -> Element<'a, ConfigureM
 fn section_content<'a>(
     state: &'a ConfigureState,
     settings: &ConfigureSettings,
+    analytics: &'a AnalyticsPanel,
 ) -> Element<'a, ConfigureMessage> {
     match state.section {
         Section::System => system_view(settings),
@@ -434,6 +472,7 @@ fn section_content<'a>(
             toast_position_view(settings, theme::from_rgb(state.spectrum.accent()))
         }
         Section::Lightbar => lightbar_view(state),
+        Section::Analytics => analytics_view(settings, analytics),
         #[cfg(feature = "dev-emulate")]
         Section::Developer => developer_view(),
     }
@@ -447,8 +486,8 @@ fn system_view<'a>(settings: &ConfigureSettings) -> Element<'a, ConfigureMessage
         items = items.push(
             checkbox(settings.autostart)
                 .label("Start with Windows")
-                .size(15.0)
-                .text_size(12.0)
+                .size(16.0)
+                .text_size(13.0)
                 .spacing(8)
                 .on_toggle(ConfigureMessage::SetAutostart),
         );
@@ -456,7 +495,7 @@ fn system_view<'a>(settings: &ConfigureSettings) -> Element<'a, ConfigureMessage
 
     items = items.push(
         text(format!("{DISPLAY_NAME} {PKG_VERSION}"))
-            .size(11.0)
+            .size(12.0)
             .color(theme::DIM),
     );
 
@@ -468,8 +507,8 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
     let toggle = |label: &'static str, value: bool, setting: NotificationSetting| {
         checkbox(value)
             .label(label)
-            .size(15.0)
-            .text_size(12.0)
+            .size(16.0)
+            .text_size(13.0)
             .spacing(8)
             .on_toggle(move |enabled| ConfigureMessage::SetNotification(setting, enabled))
     };
@@ -477,7 +516,7 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
     let threshold = settings.low_battery_percent;
     let low_slider = column![
         text(format!("At or below {threshold}%"))
-            .size(11.0)
+            .size(12.0)
             .color(theme::MUTED),
         slider(
             f32::from(LOW_BATTERY_PERCENT_MIN)..=f32::from(LOW_BATTERY_PERCENT_MAX),
@@ -511,6 +550,189 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
     .spacing(8)
     .width(Fill)
     .into()
+}
+
+fn analytics_view<'a>(
+    settings: &ConfigureSettings,
+    panel: &'a AnalyticsPanel,
+) -> Element<'a, ConfigureMessage> {
+    let mut items = Column::new().spacing(10).width(Fill);
+
+    items = items.push(
+        checkbox(settings.analytics_enabled)
+            .label("Record battery analytics")
+            .size(16.0)
+            .text_size(13.0)
+            .spacing(8)
+            .on_toggle(ConfigureMessage::SetAnalyticsEnabled),
+    );
+
+    items = items.push(
+        text("Local only. Estimates appear after one full charge and one drain from 100% (that drain may span several sittings).")
+            .size(12.0)
+            .color(theme::DIM),
+    );
+
+    if settings.analytics_enabled {
+        if panel.rows.is_empty() {
+            items = items.push(
+                text("Learning… complete a full charge or play cycle to see estimates.")
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+        } else {
+            for row in &panel.rows {
+                items = items.push(analytics_pad_card(row));
+            }
+        }
+
+        items = items.push(
+            button(text("Clear recorded data").size(13.0))
+                .padding([6, 10])
+                .on_press(ConfigureMessage::ClearAnalytics)
+                .style(theme::ghost),
+        );
+    }
+
+    items.into()
+}
+
+fn analytics_pad_card<'a>(row: &'a AnalyticsPadRow) -> Element<'a, ConfigureMessage> {
+    let charge = row
+        .typical_charge
+        .as_deref()
+        .unwrap_or("Learning…");
+    let play = row.typical_play.as_deref().unwrap_or("Learning…");
+
+    let mut col = Column::new()
+        .spacing(6)
+        .width(Fill)
+        .push(text(&row.label).size(13.0).color(theme::INK))
+        .push(
+            text(format!("Charge {charge} · Play {play}"))
+                .size(12.0)
+                .color(theme::MUTED),
+        );
+
+    if let Some(open) = row.open.as_ref() {
+        let kind = match open.kind {
+            SessionKind::Charging => "Charging now",
+            SessionKind::DischargingFromFull => "Playing from full",
+            SessionKind::PausedDischarge => "Paused (pad off)",
+        };
+        col = col.push(text(kind).size(12.0).color(theme::DIM));
+        if open.waypoints.len() >= 2 {
+            col = col.push(
+                canvas_widget(TimelineChart {
+                    waypoints: open.waypoints.clone(),
+                    kind: open.kind,
+                })
+                .width(Fill)
+                .height(Length::Fixed(TIMELINE_HEIGHT)),
+            );
+        }
+    }
+
+    container(col)
+        .padding(8)
+        .width(Fill)
+        .style(theme::surface)
+        .into()
+}
+
+struct TimelineChart {
+    waypoints: Vec<Waypoint>,
+    kind: SessionKind,
+}
+
+impl canvas::Program<ConfigureMessage> for TimelineChart {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let pad = 8.0;
+        let width = (bounds.width - pad * 2.0).max(1.0);
+        let height = (bounds.height - pad * 2.0).max(1.0);
+
+        // Background.
+        frame.fill_rectangle(
+            Point::new(0.0, 0.0),
+            Size::new(bounds.width, bounds.height),
+            theme::PANEL,
+        );
+
+        if self.waypoints.len() < 2 {
+            return vec![frame.into_geometry()];
+        }
+
+        let t0 = self.waypoints.first().map(|w| w.at_ms).unwrap_or(0);
+        let t1 = self.waypoints.last().map(|w| w.at_ms).unwrap_or(t0).max(t0 + 1);
+
+        let stroke_color = match self.kind {
+            SessionKind::Charging => theme::SUCCESS,
+            SessionKind::DischargingFromFull | SessionKind::PausedDischarge => theme::ACCENT,
+        };
+
+        // Draw continuous segments; pause gaps appear as flat wall-clock spans.
+        let path = Path::new(|builder| {
+            let mut started = false;
+            for point in &self.waypoints {
+                let x = pad + ((point.at_ms.saturating_sub(t0) as f32) / (t1 - t0) as f32) * width;
+                let y = pad + (1.0 - f32::from(point.percent) / 100.0) * height;
+                if !started {
+                    builder.move_to(Point::new(x, y));
+                    started = true;
+                } else {
+                    builder.line_to(Point::new(x, y));
+                }
+            }
+        });
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_width(2.0)
+                .with_color(stroke_color),
+        );
+
+        // Mark pause / resume points.
+        for point in &self.waypoints {
+            let x = pad + ((point.at_ms.saturating_sub(t0) as f32) / (t1 - t0) as f32) * width;
+            let y = pad + (1.0 - f32::from(point.percent) / 100.0) * height;
+            let color = match point.kind {
+                WaypointKind::Pause => theme::WARNING,
+                WaypointKind::Resume => theme::SUCCESS,
+                WaypointKind::Start | WaypointKind::Percent => stroke_color,
+            };
+            let r = if matches!(point.kind, WaypointKind::Pause | WaypointKind::Resume) {
+                3.5
+            } else {
+                2.0
+            };
+            frame.fill(&Path::circle(Point::new(x, y), r), color);
+        }
+
+        // 0% / 100% guides.
+        let top = Path::line(
+            Point::new(pad, pad),
+            Point::new(pad + width, pad),
+        );
+        let bottom = Path::line(
+            Point::new(pad, pad + height),
+            Point::new(pad + width, pad + height),
+        );
+        let guide = Stroke::default().with_width(1.0).with_color(theme::LINE);
+        frame.stroke(&top, guide);
+        frame.stroke(&bottom, guide);
+
+        vec![frame.into_geometry()]
+    }
 }
 
 fn toast_position_view<'a>(
@@ -596,8 +818,8 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
                             .width(Length::Fixed(14.0))
                             .height(Length::Fixed(14.0))
                             .style(theme::swatch(theme::from_rgb(stop.color))),
-                        text(format!("{}%", stop.percent)).size(11.0).width(Fill),
-                        text(stop.color.to_hex()).size(11.0).color(theme::MUTED),
+                        text(format!("{}%", stop.percent)).size(12.0).width(Fill),
+                        text(stop.color.to_hex()).size(12.0).color(theme::MUTED),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
@@ -620,7 +842,7 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
 
     let hue = slider(0.0..=360.0, state.hue, ConfigureMessage::HueChanged).step(1.0_f32);
 
-    let reset = button(text("Reset defaults").size(11.0).center().width(Fill))
+    let reset = button(text("Reset defaults").size(12.0).center().width(Fill))
         .padding([6, 4])
         .width(Fill)
         .on_press(ConfigureMessage::ResetSpectrum)
@@ -637,7 +859,7 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
     .width(Fill);
 
     if let Some(error) = state.error.as_deref() {
-        content = content.push(text(error).size(11.0).color(theme::WARNING));
+        content = content.push(text(error).size(12.0).color(theme::WARNING));
     }
 
     content.into()
@@ -645,18 +867,51 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
 
 #[cfg(feature = "dev-emulate")]
 fn developer_view<'a>() -> Element<'a, ConfigureMessage> {
-    Preset::ALL
-        .iter()
-        .copied()
-        .fold(Column::new().spacing(4).width(Fill), |list, preset| {
-            list.push(
-                button(text(preset.menu_label()).size(11.0).width(Fill))
-                    .padding([5, 8])
-                    .width(Fill)
-                    .on_press(ConfigureMessage::DeveloperPreset(preset))
-                    .style(theme::row_button),
-            )
-        })
+    let mut list = Column::new().spacing(4).width(Fill);
+
+    list = list.push(text("Controllers").size(12.0).color(theme::DIM));
+    for preset in [
+        Preset::Discharging50,
+        Preset::LowBattery,
+        Preset::Charging,
+        Preset::FullyCharged,
+        Preset::ChargeCompleteStep,
+        Preset::TwoPads,
+        Preset::Clear,
+    ] {
+        list = list.push(dev_preset_button(preset));
+    }
+
+    list = list.push(space().height(Length::Fixed(6.0)));
+    list = list.push(text("Battery analytics").size(12.0).color(theme::DIM));
+    list = list.push(
+        text("Enable is toggled on automatically. Seed shows est. in the ring; other steps walk a timed cycle.")
+            .size(11.0)
+            .color(theme::DIM),
+    );
+    for preset in [
+        Preset::AnalyticsSeedEstimates,
+        Preset::AnalyticsPlugEmpty,
+        Preset::AnalyticsChargeAdvance,
+        Preset::AnalyticsUnplugFull,
+        Preset::AnalyticsDrainAdvance,
+        Preset::AnalyticsPause,
+        Preset::AnalyticsResume,
+        Preset::AnalyticsPlugMidDrain,
+    ] {
+        list = list.push(dev_preset_button(preset));
+    }
+
+    list.into()
+}
+
+#[cfg(feature = "dev-emulate")]
+fn dev_preset_button<'a>(preset: Preset) -> Element<'a, ConfigureMessage> {
+    button(text(preset.menu_label()).size(12.0).width(Fill))
+        .padding([5, 8])
+        .width(Fill)
+        .on_press(ConfigureMessage::DeveloperPreset(preset))
+        .style(theme::row_button)
         .into()
 }
 

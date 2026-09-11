@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in **Battery analytics** (Settings → Analytics, off by default): records local charge and play cycles from DualSense power-state events (no extra polling) to estimate time-to-full and play time remaining. Needs one qualifying full charge and one drain from 100% (which may span several sittings). Stores a compact last-5 sample ring plus in-progress timeline waypoints in `analytics.json`; Clear recorded data wipes it. When enough data exists, the percent ring on the tray popup and overlay toasts shows a compact estimate (e.g. `est. 8h`).
+
 ## [0.1.15] - 2026-09-11
 
 ### Added

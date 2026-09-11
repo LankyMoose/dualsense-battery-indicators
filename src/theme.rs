@@ -17,8 +17,8 @@ pub const PANEL: Color = rgb(32, 37, 45);
 pub const PANEL_HOVER: Color = rgb(40, 46, 56);
 pub const LINE: Color = rgb(55, 63, 75);
 pub const INK: Color = rgb(241, 243, 245);
-pub const MUTED: Color = rgb(170, 178, 189);
-pub const DIM: Color = rgb(113, 122, 135);
+pub const MUTED: Color = rgb(186, 193, 202);
+pub const DIM: Color = rgb(128, 136, 148);
 
 pub const ACCENT: Color = rgb(0x41, 0x41, 0xFB);
 pub const DANGER: Color = rgb(0xBE, 0x00, 0x00);

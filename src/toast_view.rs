@@ -15,8 +15,8 @@ pub const MARGIN: f32 = 16.0;
 
 const RAIL_WIDTH: f32 = 3.0;
 const PADDING: f32 = 12.0;
-const HEADING_SIZE: f32 = 13.0;
-const BODY_SIZE: f32 = 12.0;
+const HEADING_SIZE: f32 = 14.0;
+const BODY_SIZE: f32 = 13.0;
 
 /// Renders the toast card. Clicking anywhere on it emits `on_dismiss`.
 pub fn view<'a, Message>(message: &'a ToastMessage, on_dismiss: Message) -> Element<'a, Message>
@@ -47,7 +47,7 @@ where
         row![
             rail,
             body,
-            percent_ring::percent_ring(message.percent, accent, TOAST_SIZE)
+            percent_ring::percent_ring(message.percent, accent, TOAST_SIZE, message.eta.clone())
         ]
         .spacing(PADDING)
         .align_y(Alignment::Center)

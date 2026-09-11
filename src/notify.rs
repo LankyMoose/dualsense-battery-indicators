@@ -28,6 +28,8 @@ pub struct NotifyEvent {
     pub heading: String,
     pub body: String,
     pub percent: Option<u8>,
+    pub serial: String,
+    pub state: PowerState,
 }
 
 impl NotifyTracker {
@@ -133,21 +135,29 @@ fn format_event(
             heading,
             body: "Connected".to_string(),
             percent: Some(controller.percent),
+            serial: controller.serial.clone(),
+            state: controller.state,
         },
         NotifyKind::Disconnect => NotifyEvent {
             heading,
             body: "Disconnected".to_string(),
             percent: Some(controller.percent),
+            serial: controller.serial.clone(),
+            state: controller.state,
         },
         NotifyKind::Low => NotifyEvent {
             heading,
             body: "Is low".to_string(),
             percent: Some(controller.percent),
+            serial: controller.serial.clone(),
+            state: controller.state,
         },
         NotifyKind::Charged => NotifyEvent {
             heading,
             body: "Finished charging".to_string(),
             percent: Some(100),
+            serial: controller.serial.clone(),
+            state: PowerState::Complete,
         },
     }
 }
@@ -182,6 +192,7 @@ mod tests {
             low_battery_percent: crate::battery::LOW_BATTERY_PERCENT,
             toast_position: Default::default(),
             spectrum: Default::default(),
+            analytics_enabled: false,
         }
     }
 

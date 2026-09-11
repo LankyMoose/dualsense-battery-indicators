@@ -3,6 +3,7 @@
 use crate::battery::{ControllerStatus, LOW_BATTERY_PERCENT, PowerState};
 
 pub const SERIAL_PREFIX: &str = "emu-";
+pub const PRIMARY_SERIAL: &str = "emu-1";
 
 pub fn is_emulated(serial: &str) -> bool {
     serial.starts_with(SERIAL_PREFIX)
@@ -18,6 +19,23 @@ pub enum Preset {
     ChargeCompleteStep,
     TwoPads,
     Clear,
+    // --- Battery analytics ---
+    /// Enable analytics + seed typical charge/play samples; show a discharging pad.
+    AnalyticsSeedEstimates,
+    /// Start charging from ~empty (5%).
+    AnalyticsPlugEmpty,
+    /// Advance charge (+% and credit active time); finishes at Complete when near full.
+    AnalyticsChargeAdvance,
+    /// Leave Complete into discharging at 100%.
+    AnalyticsUnplugFull,
+    /// Advance drain (−% and credit active time); finishes at empty bucket.
+    AnalyticsDrainAdvance,
+    /// Disconnect (pause an open from-full discharge).
+    AnalyticsPause,
+    /// Reconnect still discharging (resume paused cycle).
+    AnalyticsResume,
+    /// Plug in while discharging (ends play cycle, starts charge).
+    AnalyticsPlugMidDrain,
 }
 
 impl Preset {
@@ -30,6 +48,14 @@ impl Preset {
             Self::ChargeCompleteStep => "Emulate: charge complete step",
             Self::TwoPads => "Emulate: two pads",
             Self::Clear => "Clear emulation",
+            Self::AnalyticsSeedEstimates => "Analytics: seed estimates",
+            Self::AnalyticsPlugEmpty => "Analytics: plug empty",
+            Self::AnalyticsChargeAdvance => "Analytics: charge advance",
+            Self::AnalyticsUnplugFull => "Analytics: unplug from full",
+            Self::AnalyticsDrainAdvance => "Analytics: drain advance",
+            Self::AnalyticsPause => "Analytics: pause (pad off)",
+            Self::AnalyticsResume => "Analytics: resume",
+            Self::AnalyticsPlugMidDrain => "Analytics: plug mid-drain",
         }
     }
 
@@ -41,7 +67,29 @@ impl Preset {
         Self::ChargeCompleteStep,
         Self::TwoPads,
         Self::Clear,
+        Self::AnalyticsSeedEstimates,
+        Self::AnalyticsPlugEmpty,
+        Self::AnalyticsChargeAdvance,
+        Self::AnalyticsUnplugFull,
+        Self::AnalyticsDrainAdvance,
+        Self::AnalyticsPause,
+        Self::AnalyticsResume,
+        Self::AnalyticsPlugMidDrain,
     ];
+
+    pub fn is_analytics(self) -> bool {
+        matches!(
+            self,
+            Self::AnalyticsSeedEstimates
+                | Self::AnalyticsPlugEmpty
+                | Self::AnalyticsChargeAdvance
+                | Self::AnalyticsUnplugFull
+                | Self::AnalyticsDrainAdvance
+                | Self::AnalyticsPause
+                | Self::AnalyticsResume
+                | Self::AnalyticsPlugMidDrain
+        )
+    }
 }
 
 fn one(
@@ -61,36 +109,46 @@ fn one(
     }
 }
 
+fn primary(
+    percent: u8,
+    state: PowerState,
+    connection: &'static str,
+) -> ControllerStatus {
+    one(1, "1", percent, state, connection)
+}
+
+fn primary_from(current: &[ControllerStatus]) -> Option<&ControllerStatus> {
+    current.iter().find(|c| c.serial == PRIMARY_SERIAL)
+}
+
 /// Apply a preset. `current` is the active emulated list (may be empty).
 pub fn apply_preset(preset: Preset, current: &[ControllerStatus]) -> Vec<ControllerStatus> {
     match preset {
         Preset::Clear => Vec::new(),
         Preset::Discharging50 => {
-            vec![one(1, "1", 50, PowerState::Discharging, "USB")]
+            vec![primary(50, PowerState::Discharging, "USB")]
         }
         Preset::LowBattery => {
-            vec![one(
-                1,
-                "1",
+            vec![primary(
                 LOW_BATTERY_PERCENT,
                 PowerState::Discharging,
                 "Bluetooth",
             )]
         }
         Preset::Charging => {
-            vec![one(1, "1", 80, PowerState::Charging, "USB")]
+            vec![primary(80, PowerState::Charging, "USB")]
         }
         Preset::FullyCharged => {
-            vec![one(1, "1", 100, PowerState::Complete, "USB")]
+            vec![primary(100, PowerState::Complete, "USB")]
         }
         Preset::ChargeCompleteStep => {
             let charging = current.len() == 1
                 && current[0].state == PowerState::Charging
                 && is_emulated(&current[0].serial);
             if charging {
-                vec![one(1, "1", 100, PowerState::Complete, "USB")]
+                vec![primary(100, PowerState::Complete, "USB")]
             } else {
-                vec![one(1, "1", 80, PowerState::Charging, "USB")]
+                vec![primary(80, PowerState::Charging, "USB")]
             }
         }
         Preset::TwoPads => {
@@ -105,7 +163,73 @@ pub fn apply_preset(preset: Preset, current: &[ControllerStatus]) -> Vec<Control
                 one(2, "2", 80, PowerState::Charging, "USB"),
             ]
         }
+        Preset::AnalyticsSeedEstimates => {
+            vec![primary(65, PowerState::Discharging, "Bluetooth")]
+        }
+        Preset::AnalyticsPlugEmpty => {
+            vec![primary(5, PowerState::Charging, "USB")]
+        }
+        Preset::AnalyticsChargeAdvance => {
+            let Some(pad) = primary_from(current) else {
+                return vec![primary(5, PowerState::Charging, "USB")];
+            };
+            if pad.state == PowerState::Charging {
+                let next = (pad.percent.saturating_add(20)).min(100);
+                if next >= 100 {
+                    vec![primary(100, PowerState::Complete, "USB")]
+                } else {
+                    vec![primary(next, PowerState::Charging, "USB")]
+                }
+            } else if pad.state == PowerState::Complete {
+                vec![primary(100, PowerState::Complete, "USB")]
+            } else {
+                vec![primary(5, PowerState::Charging, "USB")]
+            }
+        }
+        Preset::AnalyticsUnplugFull => {
+            vec![primary(100, PowerState::Discharging, "Bluetooth")]
+        }
+        Preset::AnalyticsDrainAdvance => {
+            let Some(pad) = primary_from(current) else {
+                return vec![primary(100, PowerState::Discharging, "Bluetooth")];
+            };
+            if pad.state.is_discharging() {
+                let next = pad.percent.saturating_sub(20);
+                let next = if next < LOW_BATTERY_PERCENT {
+                    LOW_BATTERY_PERCENT
+                } else {
+                    next
+                };
+                vec![primary(next, PowerState::Discharging, "Bluetooth")]
+            } else if pad.state == PowerState::Complete {
+                vec![primary(100, PowerState::Discharging, "Bluetooth")]
+            } else {
+                vec![primary(100, PowerState::Discharging, "Bluetooth")]
+            }
+        }
+        Preset::AnalyticsPause => Vec::new(),
+        Preset::AnalyticsResume => {
+            let percent = primary_from(current)
+                .map(|p| p.percent)
+                .unwrap_or(60);
+            // After pause, current is empty — caller should pass last-known via resume helper.
+            vec![primary(percent, PowerState::Discharging, "Bluetooth")]
+        }
+        Preset::AnalyticsPlugMidDrain => {
+            let percent = primary_from(current)
+                .filter(|p| p.state.is_discharging())
+                .map(|p| p.percent)
+                .unwrap_or(40);
+            vec![primary(percent, PowerState::Charging, "USB")]
+        }
     }
+}
+
+/// Resume percent after AnalyticsPause (current list is empty).
+pub fn resume_percent(last: &[ControllerStatus]) -> u8 {
+    primary_from(last)
+        .map(|p| p.percent)
+        .unwrap_or(60)
 }
 
 #[cfg(test)]
@@ -127,5 +251,27 @@ mod tests {
         let pads = apply_preset(Preset::LowBattery, &[]);
         assert!(!pads.is_empty());
         assert!(apply_preset(Preset::Clear, &pads).is_empty());
+    }
+
+    #[test]
+    fn charge_advance_reaches_complete() {
+        let mut pads = apply_preset(Preset::AnalyticsPlugEmpty, &[]);
+        assert_eq!(pads[0].percent, 5);
+        pads = apply_preset(Preset::AnalyticsChargeAdvance, &pads);
+        assert_eq!(pads[0].percent, 25);
+        for _ in 0..5 {
+            pads = apply_preset(Preset::AnalyticsChargeAdvance, &pads);
+        }
+        assert_eq!(pads[0].state, PowerState::Complete);
+    }
+
+    #[test]
+    fn drain_advance_reaches_empty_bucket() {
+        let mut pads = apply_preset(Preset::AnalyticsUnplugFull, &[]);
+        assert_eq!(pads[0].percent, 100);
+        for _ in 0..6 {
+            pads = apply_preset(Preset::AnalyticsDrainAdvance, &pads);
+        }
+        assert_eq!(pads[0].percent, LOW_BATTERY_PERCENT);
     }
 }

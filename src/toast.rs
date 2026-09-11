@@ -9,16 +9,23 @@ pub struct ToastMessage {
     pub body: String,
     pub accent: Rgb,
     pub percent: u8,
+    /// Compact estimate for the percent ring (`est. 8h`), when analytics has enough data.
+    pub eta: Option<String>,
 }
 
 impl ToastMessage {
-    pub fn from_notification(event: NotifyEvent, spectrum: BatterySpectrum) -> Self {
+    pub fn from_notification(
+        event: NotifyEvent,
+        spectrum: BatterySpectrum,
+        eta: Option<String>,
+    ) -> Self {
         let percent = event.percent.unwrap_or(100).min(100);
         Self {
             heading: event.heading,
             body: event.body,
             accent: spectrum.color_at_percent(percent),
             percent,
+            eta,
         }
     }
 
@@ -29,6 +36,7 @@ impl ToastMessage {
             body: "Toasts will appear here".to_string(),
             accent: spectrum.color_at_percent(PERCENT),
             percent: PERCENT,
+            eta: None,
         }
     }
 }
@@ -58,7 +66,7 @@ mod tests {
         let events = tracker.evaluate(&[], &connected, &Prefs::default(), |_| None);
         assert_eq!(events.len(), 1);
         let message =
-            ToastMessage::from_notification(events[0].clone(), BatterySpectrum::default());
+            ToastMessage::from_notification(events[0].clone(), BatterySpectrum::default(), None);
         assert!(message.heading.contains("DualSense"));
         assert_eq!(message.percent, 40);
         assert_eq!(

@@ -7,12 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Controller nicknames: pencil edit icon after each name in the controllers popup; names persist in `controllers.json` independently of Remember and appear in toast headings.
+
+### Changed
+
+- Configure window and controller popup are now built with **iced** (`iced::daemon` + multi-window) instead of the hand-rolled softbuffer/Taffy UI.
+- Overlay toasts are iced always-on-top windows sharing the same event loop (dark card styling preserved).
+- Minimum Rust version is **1.88** (required by iced 0.14).
+
 ## [0.1.13] - 2026-09-11
 
 ### Added
 
 - Bluetooth **Turn off** action in the controller popup (HID feature report `0x08`).
-- SVG icons under `assets/icons/` for DualSense, Settings, Identify, Power, Close, Minimize, and Check; rasterized with `resvg`.
+- SVG icons under `assets/icons/` for DualSense, Settings, Identify, Power, Edit, Close, Minimize, and Check; rasterized with `resvg`.
 
 ### Changed
 

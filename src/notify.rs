@@ -41,19 +41,25 @@ impl NotifyTracker {
         previous: &[ControllerStatus],
         next: &[ControllerStatus],
         prefs: &Prefs,
+        nickname: impl Fn(&str) -> Option<String>,
     ) -> Vec<NotifyEvent> {
         let mut events: Vec<_> = self
             .collect_events(previous, next, prefs)
             .into_iter()
-            .map(|(controller, kind)| format_event(controller, kind))
+            .map(|(controller, kind)| {
+                format_event(controller, kind, nickname(&controller.serial).as_deref())
+            })
             .collect();
         if prefs.notify_disconnect {
-            events.extend(
-                previous
-                    .iter()
-                    .filter(|controller| !next.iter().any(|next| next.serial == controller.serial))
-                    .map(|controller| format_event(controller, NotifyKind::Disconnect)),
-            );
+            events.extend(previous.iter().filter(|controller| {
+                !next.iter().any(|next| next.serial == controller.serial)
+            }).map(|controller| {
+                format_event(
+                    controller,
+                    NotifyKind::Disconnect,
+                    nickname(&controller.serial).as_deref(),
+                )
+            }));
         }
         events
     }
@@ -110,8 +116,15 @@ impl NotifyTracker {
     }
 }
 
-fn format_event(controller: &ControllerStatus, kind: NotifyKind) -> NotifyEvent {
-    let heading = format!("{} ({})", controller.product, controller.connection);
+fn format_event(
+    controller: &ControllerStatus,
+    kind: NotifyKind,
+    nickname: Option<&str>,
+) -> NotifyEvent {
+    let name = nickname
+        .filter(|value| !value.is_empty())
+        .unwrap_or(controller.product);
+    let heading = format!("{name} ({})", controller.connection);
     match kind {
         NotifyKind::Connect => NotifyEvent {
             heading,
@@ -201,10 +214,22 @@ mod tests {
     fn disconnect_notifies_with_last_known_battery() {
         let mut tracker = NotifyTracker::new();
         let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
-        let events = tracker.evaluate(&connected, &[], &prefs(true, true, false));
+        let events = tracker.evaluate(&connected, &[], &prefs(true, true, false), |_| None);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].body, "Disconnected — 40%");
         assert_eq!(events[0].percent, Some(40));
+        assert_eq!(events[0].heading, "DualSense (Bluetooth)");
+    }
+
+    #[test]
+    fn toast_heading_uses_nickname_when_set() {
+        let mut tracker = NotifyTracker::new();
+        let connected = vec![pad("a", 40, PowerState::Discharging, "USB")];
+        let events = tracker.evaluate(&[], &connected, &prefs(true, true, true), |serial| {
+            (serial == "a").then(|| "Left pad".to_string())
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].heading, "Left pad (USB)");
     }
 
     #[test]
@@ -213,7 +238,7 @@ mod tests {
         let connected = vec![pad("a", 40, PowerState::Discharging, "Bluetooth")];
         let mut preferences = prefs(true, true, false);
         preferences.notify_disconnect = false;
-        assert!(tracker.evaluate(&connected, &[], &preferences).is_empty());
+        assert!(tracker.evaluate(&connected, &[], &preferences, |_| None).is_empty());
     }
 
     #[test]

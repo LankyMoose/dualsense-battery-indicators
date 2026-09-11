@@ -9,7 +9,9 @@ pub const DUALSENSE_SVG: &str = include_str!("../assets/icons/dualsense.svg");
 pub const SETTINGS_SVG: &str = include_str!("../assets/icons/settings.svg");
 pub const IDENTIFY_SVG: &str = include_str!("../assets/icons/identify.svg");
 pub const POWER_SVG: &str = include_str!("../assets/icons/power.svg");
+pub const EDIT_SVG: &str = include_str!("../assets/icons/edit.svg");
 pub const CLOSE_SVG: &str = include_str!("../assets/icons/close.svg");
+#[allow(dead_code)] // available for title-bar chrome
 pub const MINIMIZE_SVG: &str = include_str!("../assets/icons/minimize.svg");
 pub const CHECK_SVG: &str = include_str!("../assets/icons/check.svg");
 
@@ -37,6 +39,7 @@ pub struct RgbaColor {
 }
 
 impl RgbaColor {
+    #[allow(dead_code)]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, a: 255 }
     }
@@ -61,6 +64,7 @@ pub struct ColorMap {
 }
 
 impl ColorMap {
+    #[allow(dead_code)]
     pub fn current_color(color: RgbaColor) -> Self {
         Self {
             replacements: vec![("currentColor".into(), color.to_hex())],

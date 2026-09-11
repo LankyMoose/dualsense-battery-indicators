@@ -383,7 +383,7 @@ impl App {
                 self.toast_anim_started = Instant::now();
                 self.toast_dismissing = false;
                 let start = Point::new(placement.x, placement.outside_y);
-                window::move_to(id, start).chain(window::set_mode(id, window::Mode::Windowed))
+                window::move_to(id, start).chain(show_toast_without_activate(id))
             }
             Message::ToastFrame => self.animate_toast(),
             Message::ToastDismiss(generation) => {
@@ -1208,7 +1208,7 @@ impl App {
         // Keep the window alive but hidden: recreating a GPU surface for every
         // toast would cost more than the memory it saves.
         let hide = match self.toast_window {
-            Some(id) => window::set_mode(id, window::Mode::Hidden),
+            Some(id) => hide_toast(id),
             None => Task::none(),
         };
         hide.chain(self.show_next_toast())
@@ -1240,6 +1240,67 @@ fn place_popup(id: window::Id) -> Task<Message> {
 
 fn place_toast(id: window::Id) -> Task<Message> {
     window::monitor_size(id).map(move |monitor| Message::PlaceToast { id, monitor })
+}
+
+/// Show the overlay toast without activating it (so a game keeps focus).
+///
+/// iced/`set_mode(Windowed)` maps to `ShowWindow(SW_SHOW)`, which steals the
+/// foreground. On Windows we apply `WS_EX_NOACTIVATE` and show with
+/// `SW_SHOWNOACTIVATE` instead.
+fn show_toast_without_activate(id: window::Id) -> Task<Message> {
+    #[cfg(windows)]
+    {
+        window::run(id, |window| {
+            use window::raw_window_handle::RawWindowHandle;
+
+            let Ok(handle) = window.window_handle() else {
+                return;
+            };
+            let RawWindowHandle::Win32(win32_handle) = handle.as_raw() else {
+                return;
+            };
+            let hwnd = win32_handle.hwnd.get();
+            unsafe {
+                win32::apply_noactivate_exstyle(hwnd);
+                win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+            }
+        })
+        .discard()
+    }
+    #[cfg(not(windows))]
+    {
+        window::set_mode(id, window::Mode::Windowed)
+    }
+}
+
+/// Hide the overlay toast without going through iced `set_mode(Hidden)`.
+///
+/// On Windows the toast is shown via raw `ShowWindow`, so winit's `VISIBLE`
+/// flag stays false; `set_mode(Hidden)` would then be a no-op and leave the
+/// toast on screen.
+fn hide_toast(id: window::Id) -> Task<Message> {
+    #[cfg(windows)]
+    {
+        window::run(id, |window| {
+            use window::raw_window_handle::RawWindowHandle;
+
+            let Ok(handle) = window.window_handle() else {
+                return;
+            };
+            let RawWindowHandle::Win32(win32_handle) = handle.as_raw() else {
+                return;
+            };
+            let hwnd = win32_handle.hwnd.get();
+            unsafe {
+                win32::ShowWindow(hwnd, win32::SW_HIDE);
+            }
+        })
+        .discard()
+    }
+    #[cfg(not(windows))]
+    {
+        window::set_mode(id, window::Mode::Hidden)
+    }
 }
 
 fn popup_position(anchor: TrayAnchor, scale: f32, monitor: Option<Size>, size: Size) -> Point {
@@ -1542,6 +1603,16 @@ mod win32 {
     pub const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
     pub const MDT_EFFECTIVE_DPI: u32 = 0;
 
+    pub const GWL_EXSTYLE: i32 = -20;
+    pub const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+    pub const SW_HIDE: i32 = 0;
+    pub const SW_SHOWNOACTIVATE: i32 = 4;
+    pub const HWND_TOPMOST: isize = -1;
+    pub const SWP_NOSIZE: u32 = 0x0001;
+    pub const SWP_NOMOVE: u32 = 0x0002;
+    pub const SWP_NOACTIVATE: u32 = 0x0010;
+    pub const SWP_FRAMECHANGED: u32 = 0x0020;
+
     #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub struct Point {
@@ -1590,6 +1661,23 @@ mod win32 {
         }
     }
 
+    /// Mark `hwnd` as non-activating and reaffirm always-on-top without focus.
+    pub unsafe fn apply_noactivate_exstyle(hwnd: isize) {
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+
     #[link(name = "user32")]
     unsafe extern "system" {
         pub fn RegisterHotKey(hwnd: isize, id: i32, modifiers: u32, key: u32) -> i32;
@@ -1601,6 +1689,18 @@ mod win32 {
         pub fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
         pub fn GetForegroundWindow() -> isize;
         pub fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+        pub fn GetWindowLongW(hwnd: isize, index: i32) -> isize;
+        pub fn SetWindowLongW(hwnd: isize, index: i32, value: isize) -> isize;
+        pub fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        pub fn SetWindowPos(
+            hwnd: isize,
+            insert_after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
     }
 
     #[link(name = "shcore")]

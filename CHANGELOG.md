@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Overlay toasts on Windows no longer steal focus when they appear (games and other apps keep the foreground).
+
 ## [1.0.0] - 2026-09-11
 
 ### Added

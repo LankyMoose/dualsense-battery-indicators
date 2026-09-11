@@ -42,6 +42,8 @@ pub struct ControllerRow {
     pub remembered: bool,
     pub remember_enabled: bool,
     pub low: bool,
+    /// Optional remaining-time hint from battery analytics (`~2h 15m left`).
+    pub eta: Option<String>,
 }
 
 impl ControllerRow {
@@ -51,6 +53,7 @@ impl ControllerRow {
         remember_enabled: bool,
         nickname: Option<String>,
         low_battery_percent: u8,
+        eta: Option<String>,
     ) -> Self {
         Self {
             serial: controller.serial.clone(),
@@ -67,6 +70,7 @@ impl ControllerRow {
             remembered,
             remember_enabled,
             low: controller.is_low_battery(low_battery_percent),
+            eta,
         }
     }
 
@@ -82,6 +86,7 @@ impl ControllerRow {
             remembered: true,
             remember_enabled: true,
             low: false,
+            eta: None,
         }
     }
 
@@ -171,7 +176,7 @@ pub fn view<'a>(
     spectrum: &BatterySpectrum,
 ) -> Element<'a, PopupMessage> {
     let header = row![
-        text("Controllers").size(13.0).color(theme::INK).width(Fill),
+        text("Controllers").size(14.0).color(theme::INK).width(Fill),
         icon_button(
             svg_icon::SETTINGS_SVG,
             theme::MUTED,
@@ -185,7 +190,7 @@ pub fn view<'a>(
     let body: Element<'_, PopupMessage> = if rows.is_empty() {
         container(
             text("No DualSense controllers connected")
-                .size(12.0)
+                .size(13.0)
                 .color(theme::DIM),
         )
         .center_x(Fill)
@@ -217,7 +222,7 @@ fn controller_row<'a>(
 ) -> Element<'a, PopupMessage> {
     let accent = theme::from_rgb(spectrum.color_at_percent(entry.percent));
     let ring_color = if entry.connected { accent } else { theme::DIM };
-    let ring = percent_ring::percent_ring(entry.percent, ring_color, POPUP_SIZE);
+    let ring = percent_ring::percent_ring(entry.percent, ring_color, POPUP_SIZE, entry.eta.clone());
 
     let name: Element<'_, PopupMessage> = if state.is_editing(&entry.serial) {
         text_input("Nickname", &state.draft)
@@ -226,14 +231,14 @@ fn controller_row<'a>(
                 PopupMessage::DraftChanged(value.chars().take(NICKNAME_MAX_CHARS).collect())
             })
             .on_submit(PopupMessage::CommitNickname)
-            .size(12.0)
+            .size(13.0)
             .padding([2, 6])
             .width(Fill)
             .style(theme::input)
             .into()
     } else {
         text(entry.display_name())
-            .size(13.0)
+            .size(14.0)
             .color(if entry.connected {
                 theme::INK
             } else {
@@ -280,7 +285,7 @@ fn controller_row<'a>(
     }
 
     let meta = text(format!("{} · {}", entry.connection, entry.state))
-        .size(11.0)
+        .size(12.0)
         .color(if entry.low {
             theme::WARNING
         } else {
@@ -292,8 +297,8 @@ fn controller_row<'a>(
         let serial = entry.serial.clone();
         checkbox(entry.remembered)
             .label("Remember")
-            .size(13.0)
-            .text_size(11.0)
+            .size(14.0)
+            .text_size(12.0)
             .spacing(5)
             .on_toggle(move |_| PopupMessage::ToggleRemember(serial.clone()))
             .into()

@@ -40,6 +40,9 @@ pub struct Prefs {
     pub toast_position: ToastPosition,
     #[serde(default)]
     pub spectrum: BatterySpectrum,
+    /// Opt-in local charge/play duration analytics (default off).
+    #[serde(default)]
+    pub analytics_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -64,6 +67,7 @@ impl Default for Prefs {
             low_battery_percent: LOW_BATTERY_PERCENT,
             toast_position: ToastPosition::default(),
             spectrum: BatterySpectrum::default_spectrum(),
+            analytics_enabled: false,
         }
     }
 }
@@ -156,6 +160,16 @@ mod tests {
         assert_eq!(prefs.toast_position, ToastPosition::BottomCenter);
         assert!(prefs.notify_disconnect);
         assert_eq!(prefs.low_battery_percent, LOW_BATTERY_PERCENT);
+        assert!(!prefs.analytics_enabled);
+    }
+
+    #[test]
+    fn older_prefs_default_analytics_off() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notify_low":true,"notify_charged":true,"notify_connect":true,"notify_disconnect":true}"#,
+        )
+        .unwrap();
+        assert!(!prefs.analytics_enabled);
     }
 
     #[test]

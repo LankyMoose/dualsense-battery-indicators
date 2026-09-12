@@ -1269,7 +1269,7 @@ mod tests {
             "~3h 45m"
         );
         assert_eq!(
-            format_duration_short(Duration::from_secs(1 * 3600 + 59 * 60)),
+            format_duration_short(Duration::from_secs(3600 + 59 * 60)),
             "~1h 55m"
         );
         assert_eq!(format_duration_short(Duration::from_secs(4 * 60)), "~<5m");

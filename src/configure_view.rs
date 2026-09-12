@@ -530,7 +530,7 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
             f32::from(threshold),
             |value| ConfigureMessage::SetLowBatteryPercent(value.round() as u8),
         )
-        .step(5.0_f32),
+        .step(10.0_f32),
     ]
     .spacing(4)
     .width(Fill);

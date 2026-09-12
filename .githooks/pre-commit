@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Auto-format Rust sources and re-stage already-staged .rs files.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Skip if nothing Rust-related is staged (avoid fmt on docs-only commits).
+staged_rs="$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' || true)"
+if [[ -z "${staged_rs}" ]]; then
+  exit 0
+fi
+
+if ! rustfmt --version >/dev/null 2>&1; then
+  echo "error: rustfmt not found. Install with: rustup component add rustfmt" >&2
+  exit 1
+fi
+
+echo "==> cargo fmt --all"
+cargo fmt --all
+
+# Re-add only .rs files that were already staged so unstaged work stays out.
+while IFS= read -r file; do
+  [[ -n "$file" && -f "$file" ]] && git add -- "$file"
+done <<<"${staged_rs}"
+
+exit 0

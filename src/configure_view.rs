@@ -401,7 +401,10 @@ pub fn view<'a>(
             .height(Fill)
             .padding([4, 4])
             .style(theme::sidebar),
-        scrollable(container(content).padding([0, 2]).width(Fill))
+        // Embed the scrollbar so it takes layout width instead of overlaying
+        // content; spacing matches the gap between sidebar and content.
+        scrollable(content)
+            .spacing(CONTENT_PADDING)
             .height(Fill)
             .width(Fill),
     ]

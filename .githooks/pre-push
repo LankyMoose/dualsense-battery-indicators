@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Block push unless the shared CI checklist passes.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec bash "$ROOT/scripts/ci.sh"

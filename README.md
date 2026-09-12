@@ -38,6 +38,19 @@ Release builds do **not** include the developer emulator (`dev-emulate` is off b
 
 To rename the app later, change `package.name` in `Cargo.toml` and `DISPLAY_NAME` in `src/app_meta.rs` (runtime paths follow the package name).
 
+### Local git hooks (all branches)
+
+After cloning, point Git at the repo hooks once (stored in `.git/config`, not committed):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- **pre-commit** — runs `cargo fmt --all` and re-stages already-staged `.rs` files.
+- **pre-push** — runs the same checklist as CI (`scripts/ci.sh`: fmt check, clippy `-D warnings`, tests) on **every** branch you push.
+
+Bypass with `git commit --no-verify` or `git push --no-verify` when needed. You can also run checks manually: `bash scripts/ci.sh`.
+
 ## Run
 
 ```bash

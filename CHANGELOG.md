@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Low-battery threshold is DualSense mid-points 5–35% (was 5–50% in 5% steps); non-observable values in saved prefs snap down to the next mid-point.
+- Low-battery threshold is DualSense mid-points 5–35% (was 5–50% in 5% steps); non-observable values in saved prefs snap down to the next mid-point. The threshold slider is shown only when low-battery notifications are enabled.
 
 ## [1.1.0] - 2026-09-12
 

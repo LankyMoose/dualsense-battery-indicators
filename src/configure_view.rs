@@ -572,7 +572,7 @@ fn analytics_view<'a>(
     );
 
     items = items.push(
-        text("Local only. Learns each battery step; estimates appear once a continuous path to empty (play) or full (charge) is covered. Mid-cycle unplug or charge does not wipe learned steps.")
+        text("Local only. Full charge / full drain are estimated totals for a complete cycle. Remaining time on the tray uses your current (or last-known) percent. Mid-cycle unplug or charge does not wipe learned steps.")
             .size(12.0)
             .color(theme::DIM),
     );
@@ -580,7 +580,7 @@ fn analytics_view<'a>(
     if settings.analytics_enabled {
         if panel.rows.is_empty() {
             items = items.push(
-                text("Learning… play through battery steps (or charge) to build coverage.")
+                text("Learning… play or charge through a battery step to seed estimates.")
                     .size(12.0)
                     .color(theme::MUTED),
             );
@@ -602,15 +602,23 @@ fn analytics_view<'a>(
 }
 
 fn analytics_pad_card<'a>(row: &'a AnalyticsPadRow) -> Element<'a, ConfigureMessage> {
-    let charge = row.typical_charge.as_deref().unwrap_or("Learning…");
-    let play = row.typical_play.as_deref().unwrap_or("Learning…");
+    let charge = row
+        .typical_charge
+        .as_ref()
+        .map(|d| format!("Full charge {d}"))
+        .unwrap_or_else(|| "Full charge Learning…".to_string());
+    let play = row
+        .typical_play
+        .as_ref()
+        .map(|d| format!("Full drain {d}"))
+        .unwrap_or_else(|| "Full drain Learning…".to_string());
 
     let mut col = Column::new()
         .spacing(6)
         .width(Fill)
         .push(text(&row.label).size(13.0).color(theme::INK))
         .push(
-            text(format!("Charge {charge} · Play {play}"))
+            text(format!("{charge} · {play}"))
                 .size(12.0)
                 .color(theme::MUTED),
         );
@@ -684,55 +692,30 @@ impl canvas::Program<ConfigureMessage> for CoverageChart {
         let filled = theme::ACCENT;
         let charge_filled = theme::SUCCESS;
         let gap = theme::LINE;
-        let estimable = if self.drain {
-            Color {
-                a: 0.35,
-                ..theme::ACCENT
-            }
-        } else {
-            Color {
-                a: 0.35,
-                ..theme::SUCCESS
-            }
+        let speculative_drain = Color {
+            a: 0.35,
+            ..theme::ACCENT
         };
-
-        let estimable_bound = if self.drain {
-            let mut covered_to = 5u8;
-            for step in self.steps.iter().rev() {
-                if step.to_percent != covered_to || step.typical_ms.is_none() {
-                    break;
-                }
-                covered_to = step.from_percent;
-            }
-            covered_to
-        } else {
-            let mut covered_from = 100u8;
-            for step in self.steps.iter().rev() {
-                if step.to_percent != covered_from || step.typical_ms.is_none() {
-                    break;
-                }
-                covered_from = step.from_percent;
-            }
-            covered_from
+        let speculative_charge = Color {
+            a: 0.35,
+            ..theme::SUCCESS
         };
 
         let n = self.steps.len() as f32;
         let seg_w = width / n;
         for (i, step) in self.steps.iter().enumerate() {
             let x = pad + i as f32 * seg_w;
-            let learned = step.typical_ms.is_some();
-            let in_estimable = learned
-                && if self.drain {
-                    step.from_percent <= estimable_bound
-                } else {
-                    step.from_percent >= estimable_bound
-                };
-
-            let color = if learned {
+            let color = if step.typical_ms.is_some() {
                 if self.drain {
                     filled
                 } else {
                     charge_filled
+                }
+            } else if step.speculative {
+                if self.drain {
+                    speculative_drain
+                } else {
+                    speculative_charge
                 }
             } else {
                 gap
@@ -742,13 +725,6 @@ impl canvas::Program<ConfigureMessage> for CoverageChart {
                 Size::new((seg_w - 2.0).max(1.0), height * 0.5),
                 color,
             );
-            if in_estimable {
-                frame.fill_rectangle(
-                    Point::new(x + 1.0, pad),
-                    Size::new((seg_w - 2.0).max(1.0), height * 0.15),
-                    estimable,
-                );
-            }
         }
 
         vec![frame.into_geometry()]

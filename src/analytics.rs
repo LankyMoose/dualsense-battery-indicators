@@ -1,8 +1,9 @@
 //! Opt-in local battery step analytics (charge / play duration estimates).
 //!
 //! Learns per DualSense bucket edge (last-3 durations). Interruptions clear only
-//! the in-progress bucket timer — committed steps survive. ETA requires a
-//! continuous path to empty (play) or full (charge). Nothing leaves the machine.
+//! the in-progress bucket timer — committed steps survive. Remaining-time ETA
+//! can speculate from a single qualifying step (half-bucket 100↔95 excluded as
+//! a rate source). Nothing leaves the machine.
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
@@ -75,12 +76,15 @@ struct AnalyticsFile {
     controllers: HashMap<String, SerialRecord>,
 }
 
-/// One step on the coverage chart (median duration if learned).
+/// One step on the coverage chart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepCoverage {
     pub from_percent: u8,
     pub to_percent: u8,
+    /// Measured median when this edge has samples.
     pub typical_ms: Option<u64>,
+    /// True when unmeasured but a qualifying rate exists to fill this gap.
+    pub speculative: bool,
 }
 
 /// Snapshot of estimates / coverage for UI.
@@ -531,13 +535,13 @@ impl AnalyticsStore {
 
     pub fn typical_charge(&self, serial: &str) -> Option<Duration> {
         let record = self.by_serial.get(serial)?;
-        let ms = chain_ms(&record.charge_steps, &charge_edges())?;
+        let ms = speculative_chain_ms(&record.charge_steps, &charge_edges())?;
         Some(Duration::from_millis(ms))
     }
 
     pub fn typical_play(&self, serial: &str) -> Option<Duration> {
         let record = self.by_serial.get(serial)?;
-        let ms = chain_ms(&record.drain_steps, &drain_edges())?;
+        let ms = speculative_chain_ms(&record.drain_steps, &drain_edges())?;
         Some(Duration::from_millis(ms))
     }
 
@@ -546,53 +550,60 @@ impl AnalyticsStore {
     }
 
     pub fn panel_rows(&self) -> Vec<ControllerAnalytics> {
-        let mut rows: Vec<_> = self
-            .by_serial
-            .iter()
-            .filter(|(_, record)| {
-                !record.drain_steps.is_empty()
-                    || !record.charge_steps.is_empty()
-                    || record.in_progress.is_some()
+        let mut serials: Vec<_> = self.by_serial.keys().cloned().collect();
+        serials.sort();
+        serials
+            .into_iter()
+            .filter_map(|serial| {
+                let record = self.by_serial.get(&serial)?;
+                if record.drain_steps.is_empty()
+                    && record.charge_steps.is_empty()
+                    && record.in_progress.is_none()
+                {
+                    return None;
+                }
+                Some(ControllerAnalytics {
+                    serial: serial.clone(),
+                    typical_charge: self.typical_charge(&serial),
+                    typical_play: self.typical_play(&serial),
+                    in_progress: self.in_progress(&serial).cloned(),
+                    drain_coverage: coverage_list(&record.drain_steps, &drain_edges()),
+                    charge_coverage: coverage_list(&record.charge_steps, &charge_edges()),
+                })
             })
-            .map(|(serial, record)| ControllerAnalytics {
-                serial: serial.clone(),
-                typical_charge: chain_ms(&record.charge_steps, &charge_edges())
-                    .map(Duration::from_millis),
-                typical_play: chain_ms(&record.drain_steps, &drain_edges())
-                    .map(Duration::from_millis),
-                in_progress: record.in_progress.clone(),
-                drain_coverage: coverage_list(&record.drain_steps, &drain_edges()),
-                charge_coverage: coverage_list(&record.charge_steps, &charge_edges()),
-            })
-            .collect();
-        rows.sort_by(|a, b| a.serial.cmp(&b.serial));
-        rows
+            .collect()
     }
 
     pub fn eta_for(&self, controller: &ControllerStatus) -> Option<EtaHint> {
-        let record = self.by_serial.get(controller.serial.as_str())?;
         match controller.state {
-            PowerState::Discharging => {
-                let edges = drain_edges_from(controller.percent)?;
-                let ms = chain_ms(&record.drain_steps, &edges)?;
-                let left = Duration::from_millis(ms);
-                if left.is_zero() {
-                    None
-                } else {
-                    Some(EtaHint::PlayLeft(left))
-                }
-            }
-            PowerState::Charging => {
-                let edges = charge_edges_from(controller.percent)?;
-                let ms = chain_ms(&record.charge_steps, &edges)?;
-                let left = Duration::from_millis(ms);
-                if left.is_zero() {
-                    None
-                } else {
-                    Some(EtaHint::ChargeToFull(left))
-                }
-            }
+            PowerState::Discharging => self.eta_play_at(&controller.serial, controller.percent),
+            PowerState::Charging => self.eta_charge_at(&controller.serial, controller.percent),
             _ => None,
+        }
+    }
+
+    /// Remaining play time at `percent` (used for live drain and disconnected last-known %).
+    pub fn eta_play_at(&self, serial: &str, percent: u8) -> Option<EtaHint> {
+        let record = self.by_serial.get(serial)?;
+        let edges = drain_edges_from(percent)?;
+        let ms = speculative_chain_ms(&record.drain_steps, &edges)?;
+        let left = Duration::from_millis(ms);
+        if left.is_zero() {
+            None
+        } else {
+            Some(EtaHint::PlayLeft(left))
+        }
+    }
+
+    fn eta_charge_at(&self, serial: &str, percent: u8) -> Option<EtaHint> {
+        let record = self.by_serial.get(serial)?;
+        let edges = charge_edges_from(percent)?;
+        let ms = speculative_chain_ms(&record.charge_steps, &edges)?;
+        let left = Duration::from_millis(ms);
+        if left.is_zero() {
+            None
+        } else {
+            Some(EtaHint::ChargeToFull(left))
         }
     }
 }
@@ -716,24 +727,57 @@ fn step_median(steps: &[StepSample], from: u8, to: u8) -> Option<u64> {
         .and_then(|s| median_ms(&s.samples_ms))
 }
 
-fn chain_ms(steps: &[StepSample], edges: &[(u8, u8)]) -> Option<u64> {
+/// Half-bucket DualSense tops — recorded, but never used as speculative rate sources.
+fn is_half_bucket_edge(from: u8, to: u8) -> bool {
+    (from == FULL_PERCENT && to == 95) || (from == 95 && to == FULL_PERCENT)
+}
+
+/// Median ms-per-percent from qualifying (non half-bucket) learned steps.
+fn default_rate_ms_per_percent(steps: &[StepSample]) -> Option<u64> {
+    let mut rates = Vec::new();
+    for step in steps {
+        if is_half_bucket_edge(step.from_percent, step.to_percent) {
+            continue;
+        }
+        let Some(med) = median_ms(&step.samples_ms) else {
+            continue;
+        };
+        let delta = u64::from(step.from_percent.abs_diff(step.to_percent));
+        if delta == 0 {
+            continue;
+        }
+        rates.push(med / delta);
+    }
+    median_ms(&rates)
+}
+
+/// Sum path duration: measured medians where present, else rate × percent delta.
+fn speculative_chain_ms(steps: &[StepSample], edges: &[(u8, u8)]) -> Option<u64> {
     if edges.is_empty() {
         return None;
     }
+    let rate = default_rate_ms_per_percent(steps)?;
     let mut total = 0u64;
     for &(from, to) in edges {
-        total = total.saturating_add(step_median(steps, from, to)?);
+        let delta = u64::from(from.abs_diff(to));
+        let ms = step_median(steps, from, to).unwrap_or_else(|| rate.saturating_mul(delta));
+        total = total.saturating_add(ms);
     }
     Some(total)
 }
 
 fn coverage_list(steps: &[StepSample], edges: &[(u8, u8)]) -> Vec<StepCoverage> {
+    let can_speculate = default_rate_ms_per_percent(steps).is_some();
     edges
         .iter()
-        .map(|&(from, to)| StepCoverage {
-            from_percent: from,
-            to_percent: to,
-            typical_ms: step_median(steps, from, to),
+        .map(|&(from, to)| {
+            let typical_ms = step_median(steps, from, to);
+            StepCoverage {
+                from_percent: from,
+                to_percent: to,
+                typical_ms,
+                speculative: typical_ms.is_none() && can_speculate,
+            }
         })
         .collect()
 }
@@ -755,17 +799,17 @@ pub fn format_duration_short(duration: Duration) -> String {
     }
 }
 
-/// Compact ring label: `est. 8h`, `est. 40m`.
+/// Compact ring label: `~8h`, `~40m`.
 pub fn format_eta_ring(hint: EtaHint) -> String {
     let duration = match hint {
         EtaHint::PlayLeft(d) | EtaHint::ChargeToFull(d) => d,
     };
     let total_mins = duration.as_secs().div_ceil(60).max(1);
     if total_mins < 60 {
-        format!("est. {total_mins}m")
+        format!("~{total_mins}m")
     } else {
         let hours = total_mins / 60;
-        format!("est. {hours}h")
+        format!("~{hours}h")
     }
 }
 
@@ -927,7 +971,56 @@ mod tests {
     }
 
     #[test]
-    fn drain_eta_requires_path_to_empty() {
+    fn drain_one_step_unlocks_speculative_eta() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![StepSample {
+                    from_percent: 45,
+                    to_percent: 35,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        // 10% in 5 min → 0.5 min per %. At 45%: 45→5 = 40% → 20 min.
+        match store.eta_for(&pad("a", 45, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 20 * 60),
+            other => panic!("expected ETA at 45%, got {other:?}"),
+        }
+        // At 25%: 25→5 = 20% → 10 min.
+        match store.eta_for(&pad("a", 25, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 10 * 60),
+            other => panic!("expected ETA at 25%, got {other:?}"),
+        }
+        let typical = store.typical_play("a").expect("speculative typical");
+        // Full 100→5 = 95% → 47.5 min.
+        assert_eq!(typical.as_secs(), 47 * 60 + 30);
+    }
+
+    #[test]
+    fn drain_half_bucket_alone_does_not_speculate() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![StepSample {
+                    from_percent: 100,
+                    to_percent: 95,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        assert!(store.eta_for(&pad("a", 100, PowerState::Discharging)).is_none());
+        assert!(store.typical_play("a").is_none());
+    }
+
+    #[test]
+    fn drain_measured_preferred_over_speculation() {
         let mut store = AnalyticsStore::default();
         store.by_serial.insert(
             "a".into(),
@@ -935,31 +1028,26 @@ mod tests {
                 last_seen_ms: 1,
                 drain_steps: vec![
                     StepSample {
-                        from_percent: 15,
-                        to_percent: 5,
-                        samples_ms: vec![5 * 60 * 1000],
+                        from_percent: 45,
+                        to_percent: 35,
+                        samples_ms: vec![10 * 60 * 1000], // 1 min/%
                     },
                     StepSample {
                         from_percent: 25,
                         to_percent: 15,
-                        samples_ms: vec![5 * 60 * 1000],
-                    },
-                    StepSample {
-                        from_percent: 45,
-                        to_percent: 35,
-                        samples_ms: vec![5 * 60 * 1000],
+                        samples_ms: vec![2 * 60 * 1000], // measured faster
                     },
                 ],
                 ..SerialRecord::default()
             },
         );
+        // Rate from both qualifying: medians 1 min/% and 0.2 min/% → median of rates.
+        // rates = [60000, 12000], median of 2 = average = 36000 ms/%
+        // At 25%: 25→15 measured 2m + 15→5 speculated 36000*10 = 6m → 8m
         match store.eta_for(&pad("a", 25, PowerState::Discharging)) {
-            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 10 * 60),
-            other => panic!("expected ETA at 25%, got {other:?}"),
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 8 * 60),
+            other => panic!("unexpected {other:?}"),
         }
-        assert!(store.eta_for(&pad("a", 45, PowerState::Discharging)).is_none());
-        assert!(store.eta_for(&pad("a", 35, PowerState::Discharging)).is_none());
-        assert!(store.typical_play("a").is_none());
     }
 
     #[test]
@@ -1046,46 +1134,45 @@ mod tests {
     }
 
     #[test]
-    fn charge_eta_requires_path_to_full() {
+    fn charge_one_step_unlocks_speculative_eta() {
         let mut store = AnalyticsStore::default();
         store.by_serial.insert(
             "a".into(),
             SerialRecord {
                 last_seen_ms: 1,
-                charge_steps: vec![
-                    StepSample {
-                        from_percent: 5,
-                        to_percent: 15,
-                        samples_ms: vec![5 * 60 * 1000],
-                    },
-                    StepSample {
-                        from_percent: 15,
-                        to_percent: 25,
-                        samples_ms: vec![5 * 60 * 1000],
-                    },
-                ],
+                charge_steps: vec![StepSample {
+                    from_percent: 5,
+                    to_percent: 15,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
                 ..SerialRecord::default()
             },
         );
-        assert!(store.eta_for(&pad("a", 5, PowerState::Charging)).is_none());
-        assert!(store.typical_charge("a").is_none());
-
-        // Fill remaining path 25→100.
-        let record = store.by_serial.get_mut("a").unwrap();
-        for (from, to) in charge_edges() {
-            if from < 25 {
-                continue;
-            }
-            push_step_sample(&mut record.charge_steps, from, to, 5 * 60 * 1000);
-        }
-        match store.eta_for(&pad("a", 15, PowerState::Charging)) {
-            Some(EtaHint::ChargeToFull(d)) => {
-                let edges = charge_edges_from(15).unwrap();
-                assert_eq!(d.as_secs(), 5 * 60 * edges.len() as u64);
-            }
+        // 10% in 5 min → 0.5 min/%. At 5%: 5→100 = 95% → 47.5 min.
+        match store.eta_for(&pad("a", 5, PowerState::Charging)) {
+            Some(EtaHint::ChargeToFull(d)) => assert_eq!(d.as_secs(), 47 * 60 + 30),
             other => panic!("unexpected {other:?}"),
         }
         assert!(store.typical_charge("a").is_some());
+    }
+
+    #[test]
+    fn charge_half_bucket_alone_does_not_speculate() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                charge_steps: vec![StepSample {
+                    from_percent: 95,
+                    to_percent: 100,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        assert!(store.eta_for(&pad("a", 95, PowerState::Charging)).is_none());
+        assert!(store.typical_charge("a").is_none());
     }
 
     #[test]
@@ -1135,11 +1222,11 @@ mod tests {
     fn format_eta_ring_is_compact() {
         assert_eq!(
             format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(8 * 3600))),
-            "est. 8h"
+            "~8h"
         );
         assert_eq!(
             format_eta_ring(EtaHint::ChargeToFull(Duration::from_secs(40 * 60))),
-            "est. 40m"
+            "~40m"
         );
     }
 

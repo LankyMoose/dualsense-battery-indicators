@@ -2,7 +2,7 @@
 //! position picker, lightbar spectrum editor, and battery analytics.
 
 use crate::analytics::{
-    ControllerAnalytics, OpenSession, SessionKind, Waypoint, WaypointKind, format_duration_short,
+    BucketDirection, ControllerAnalytics, InProgressBucket, StepCoverage, format_duration_short,
 };
 use crate::app_meta::{DISPLAY_NAME, PKG_VERSION};
 use crate::color::{BatterySpectrum, GradientStop, hsv_to_rgb};
@@ -12,7 +12,7 @@ use crate::prefs::{LOW_BATTERY_PERCENT_MAX, LOW_BATTERY_PERCENT_MIN, ToastPositi
 use crate::svg_icon;
 use crate::theme;
 use iced::mouse;
-use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke};
+use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::widget::{
     Column, Row, button, canvas as canvas_widget, checkbox, column, container, mouse_area, row,
     scrollable, slider, space, svg, text,
@@ -34,7 +34,7 @@ const CONTENT_WIDTH: f32 = WIDTH - SIDEBAR_WIDTH - CONTENT_PADDING * 3.0;
 
 const BAR_HEIGHT: f32 = 44.0;
 const SV_HEIGHT: f32 = 112.0;
-const TIMELINE_HEIGHT: f32 = 120.0;
+const COVERAGE_HEIGHT: f32 = 56.0;
 const HANDLE_WIDTH: f32 = 10.0;
 const HIT_RADIUS: f32 = 12.0;
 /// Vertical distance outside the bar that arms stop removal (matches softbuffer UI).
@@ -132,7 +132,9 @@ pub struct AnalyticsPadRow {
     pub label: String,
     pub typical_charge: Option<String>,
     pub typical_play: Option<String>,
-    pub open: Option<OpenSession>,
+    pub in_progress: Option<InProgressBucket>,
+    pub drain_coverage: Vec<StepCoverage>,
+    pub charge_coverage: Vec<StepCoverage>,
 }
 
 impl AnalyticsPadRow {
@@ -141,7 +143,9 @@ impl AnalyticsPadRow {
             label,
             typical_charge: row.typical_charge.map(format_duration_short),
             typical_play: row.typical_play.map(format_duration_short),
-            open: row.open.clone(),
+            in_progress: row.in_progress.clone(),
+            drain_coverage: row.drain_coverage.clone(),
+            charge_coverage: row.charge_coverage.clone(),
         }
     }
 }
@@ -397,7 +401,10 @@ pub fn view<'a>(
             .height(Fill)
             .padding([4, 4])
             .style(theme::sidebar),
-        scrollable(container(content).padding([0, 2]).width(Fill))
+        // Embed the scrollbar so it takes layout width instead of overlaying
+        // content; spacing matches the gap between sidebar and content.
+        scrollable(content)
+            .spacing(CONTENT_PADDING)
             .height(Fill)
             .width(Fill),
     ]
@@ -568,7 +575,7 @@ fn analytics_view<'a>(
     );
 
     items = items.push(
-        text("Local only. Estimates appear after one full charge and one drain from 100% (that drain may span several sittings).")
+        text("Local only. Full charge / full drain are estimated totals for a complete cycle. Remaining time on the tray uses your current (or last-known) percent. Mid-cycle unplug or charge does not wipe learned steps.")
             .size(12.0)
             .color(theme::DIM),
     );
@@ -576,7 +583,7 @@ fn analytics_view<'a>(
     if settings.analytics_enabled {
         if panel.rows.is_empty() {
             items = items.push(
-                text("Learning… complete a full charge or play cycle to see estimates.")
+                text("Learning… play or charge through a battery step to seed estimates.")
                     .size(12.0)
                     .color(theme::MUTED),
             );
@@ -598,37 +605,54 @@ fn analytics_view<'a>(
 }
 
 fn analytics_pad_card<'a>(row: &'a AnalyticsPadRow) -> Element<'a, ConfigureMessage> {
-    let charge = row.typical_charge.as_deref().unwrap_or("Learning…");
-    let play = row.typical_play.as_deref().unwrap_or("Learning…");
+    let charge = row
+        .typical_charge
+        .as_ref()
+        .map(|d| format!("Full charge {d}"))
+        .unwrap_or_else(|| "Full charge Learning…".to_string());
+    let play = row
+        .typical_play
+        .as_ref()
+        .map(|d| format!("Full drain {d}"))
+        .unwrap_or_else(|| "Full drain Learning…".to_string());
 
     let mut col = Column::new()
         .spacing(6)
         .width(Fill)
         .push(text(&row.label).size(13.0).color(theme::INK))
         .push(
-            text(format!("Charge {charge} · Play {play}"))
+            text(format!("{charge} · {play}"))
                 .size(12.0)
                 .color(theme::MUTED),
         );
 
-    if let Some(open) = row.open.as_ref() {
-        let kind = match open.kind {
-            SessionKind::Charging => "Charging now",
-            SessionKind::DischargingFromFull => "Playing from full",
-            SessionKind::PausedDischarge => "Paused (pad off)",
+    if let Some(progress) = row.in_progress.as_ref() {
+        let label = match progress.direction {
+            BucketDirection::Drain => format!("Recording drain at {}%", progress.percent),
+            BucketDirection::Charge => format!("Recording charge at {}%", progress.percent),
         };
-        col = col.push(text(kind).size(12.0).color(theme::DIM));
-        if open.waypoints.len() >= 2 {
-            col = col.push(
-                canvas_widget(TimelineChart {
-                    waypoints: open.waypoints.clone(),
-                    kind: open.kind,
-                })
-                .width(Fill)
-                .height(Length::Fixed(TIMELINE_HEIGHT)),
-            );
-        }
+        col = col.push(text(label).size(12.0).color(theme::DIM));
     }
+
+    col = col
+        .push(text("Play coverage").size(11.0).color(theme::DIM))
+        .push(
+            canvas_widget(CoverageChart {
+                steps: row.drain_coverage.clone(),
+                drain: true,
+            })
+            .width(Fill)
+            .height(Length::Fixed(COVERAGE_HEIGHT)),
+        )
+        .push(text("Charge coverage").size(11.0).color(theme::DIM))
+        .push(
+            canvas_widget(CoverageChart {
+                steps: row.charge_coverage.clone(),
+                drain: false,
+            })
+            .width(Fill)
+            .height(Length::Fixed(COVERAGE_HEIGHT)),
+        );
 
     container(col)
         .padding(8)
@@ -637,12 +661,12 @@ fn analytics_pad_card<'a>(row: &'a AnalyticsPadRow) -> Element<'a, ConfigureMess
         .into()
 }
 
-struct TimelineChart {
-    waypoints: Vec<Waypoint>,
-    kind: SessionKind,
+struct CoverageChart {
+    steps: Vec<StepCoverage>,
+    drain: bool,
 }
 
-impl canvas::Program<ConfigureMessage> for TimelineChart {
+impl canvas::Program<ConfigureMessage> for CoverageChart {
     type State = ();
 
     fn draw(
@@ -654,79 +678,53 @@ impl canvas::Program<ConfigureMessage> for TimelineChart {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let pad = 8.0;
+        let pad = 6.0;
         let width = (bounds.width - pad * 2.0).max(1.0);
         let height = (bounds.height - pad * 2.0).max(1.0);
 
-        // Background.
         frame.fill_rectangle(
             Point::new(0.0, 0.0),
             Size::new(bounds.width, bounds.height),
             theme::PANEL,
         );
 
-        if self.waypoints.len() < 2 {
+        if self.steps.is_empty() {
             return vec![frame.into_geometry()];
         }
 
-        let t0 = self.waypoints.first().map(|w| w.at_ms).unwrap_or(0);
-        let t1 = self
-            .waypoints
-            .last()
-            .map(|w| w.at_ms)
-            .unwrap_or(t0)
-            .max(t0 + 1);
-
-        let stroke_color = match self.kind {
-            SessionKind::Charging => theme::SUCCESS,
-            SessionKind::DischargingFromFull | SessionKind::PausedDischarge => theme::ACCENT,
+        let filled = theme::ACCENT;
+        let charge_filled = theme::SUCCESS;
+        let gap = theme::LINE;
+        let speculative_drain = Color {
+            a: 0.35,
+            ..theme::ACCENT
+        };
+        let speculative_charge = Color {
+            a: 0.35,
+            ..theme::SUCCESS
         };
 
-        // Draw continuous segments; pause gaps appear as flat wall-clock spans.
-        let path = Path::new(|builder| {
-            let mut started = false;
-            for point in &self.waypoints {
-                let x = pad + ((point.at_ms.saturating_sub(t0) as f32) / (t1 - t0) as f32) * width;
-                let y = pad + (1.0 - f32::from(point.percent) / 100.0) * height;
-                if !started {
-                    builder.move_to(Point::new(x, y));
-                    started = true;
+        let n = self.steps.len() as f32;
+        let seg_w = width / n;
+        for (i, step) in self.steps.iter().enumerate() {
+            let x = pad + i as f32 * seg_w;
+            let color = if step.typical_ms.is_some() {
+                if self.drain { filled } else { charge_filled }
+            } else if step.speculative {
+                if self.drain {
+                    speculative_drain
                 } else {
-                    builder.line_to(Point::new(x, y));
+                    speculative_charge
                 }
-            }
-        });
-        frame.stroke(
-            &path,
-            Stroke::default().with_width(2.0).with_color(stroke_color),
-        );
-
-        // Mark pause / resume points.
-        for point in &self.waypoints {
-            let x = pad + ((point.at_ms.saturating_sub(t0) as f32) / (t1 - t0) as f32) * width;
-            let y = pad + (1.0 - f32::from(point.percent) / 100.0) * height;
-            let color = match point.kind {
-                WaypointKind::Pause => theme::WARNING,
-                WaypointKind::Resume => theme::SUCCESS,
-                WaypointKind::Start | WaypointKind::Percent => stroke_color,
-            };
-            let r = if matches!(point.kind, WaypointKind::Pause | WaypointKind::Resume) {
-                3.5
             } else {
-                2.0
+                gap
             };
-            frame.fill(&Path::circle(Point::new(x, y), r), color);
+            frame.fill_rectangle(
+                Point::new(x + 1.0, pad + height * 0.25),
+                Size::new((seg_w - 2.0).max(1.0), height * 0.5),
+                color,
+            );
         }
-
-        // 0% / 100% guides.
-        let top = Path::line(Point::new(pad, pad), Point::new(pad + width, pad));
-        let bottom = Path::line(
-            Point::new(pad, pad + height),
-            Point::new(pad + width, pad + height),
-        );
-        let guide = Stroke::default().with_width(1.0).with_color(theme::LINE);
-        frame.stroke(&top, guide);
-        frame.stroke(&bottom, guide);
 
         vec![frame.into_geometry()]
     }

@@ -74,7 +74,11 @@ impl ControllerRow {
         }
     }
 
-    pub fn disconnected(controller: &KnownController, nickname: Option<String>) -> Self {
+    pub fn disconnected(
+        controller: &KnownController,
+        nickname: Option<String>,
+        eta: Option<String>,
+    ) -> Self {
         Self {
             serial: controller.serial.clone(),
             product: controller.product.clone(),
@@ -86,7 +90,7 @@ impl ControllerRow {
             remembered: true,
             remember_enabled: true,
             low: false,
-            eta: None,
+            eta,
         }
     }
 

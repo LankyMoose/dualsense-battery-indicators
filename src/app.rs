@@ -611,7 +611,14 @@ impl App {
         }
         for controller in self.known.remembered_disconnected(&self.controllers) {
             let nickname = self.known.nickname(&controller.serial).map(str::to_string);
-            rows.push(ControllerRow::disconnected(controller, nickname));
+            let eta = if self.prefs.analytics_enabled {
+                self.analytics
+                    .eta_play_at(&controller.serial, controller.percent)
+                    .map(analytics::format_eta_ring)
+            } else {
+                None
+            };
+            rows.push(ControllerRow::disconnected(controller, nickname, eta));
         }
         self.popup_rows = rows;
     }
@@ -1051,8 +1058,8 @@ impl App {
                 .dev_paused_percent
                 .or_else(|| {
                     self.analytics
-                        .open_session(emulate::PRIMARY_SERIAL)
-                        .map(|o| o.last_percent)
+                        .in_progress(emulate::PRIMARY_SERIAL)
+                        .map(|p| p.percent)
                 })
                 .unwrap_or(60);
             vec![ControllerStatus {

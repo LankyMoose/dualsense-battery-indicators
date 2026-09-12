@@ -1,8 +1,9 @@
-//! Opt-in local battery cycle analytics (charge / play duration estimates).
+//! Opt-in local battery step analytics (charge / play duration estimates).
 //!
-//! Cycle boundaries come from DualSense power-state edges — not a separate poller.
-//! Persistence is a compact per-serial summary (last-5 duration rings + one open
-//! session with waypoints). Nothing leaves the machine.
+//! Learns per DualSense bucket edge (last-3 durations). Interruptions clear only
+//! the in-progress bucket timer — committed steps survive. Remaining-time ETA
+//! can speculate from a single qualifying step (half-bucket 100↔95 excluded as
+//! a rate source). Nothing leaves the machine.
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
@@ -13,77 +14,60 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// How many qualifying durations to keep per metric.
-pub const SAMPLE_RING_CAP: usize = 5;
-/// Max waypoints for an in-progress timeline chart.
-pub const WAYPOINT_CAP: usize = 64;
+/// How many durations to keep per drain/charge step edge.
+pub const STEP_RING_CAP: usize = 3;
 /// Max controller serials retained in the store.
 pub const SERIAL_CAP: usize = 32;
 /// Drop pads not seen for this long (unless remembered / nicknamed).
 pub const STALE_SERIAL_DAYS: u64 = 180;
-/// Drop an abandoned open session after this long.
-pub const ABANDONED_SESSION_DAYS: u64 = 30;
 
-/// Accept a charge sample only if it started near empty.
-const CHARGE_START_MAX_PERCENT: u8 = 15;
-/// Accept a play sample if at least this much percent was consumed.
-const PLAY_MIN_PERCENT_USED: u8 = 50;
-/// Or if it ended in / below the empty DualSense bucket.
-const PLAY_EMPTY_PERCENT: u8 = LOW_BATTERY_PERCENT;
+/// Empty DualSense bucket (level 0 mid-point).
+const EMPTY_PERCENT: u8 = LOW_BATTERY_PERCENT;
+/// Full pack.
+const FULL_PERCENT: u8 = 100;
 
-const MIN_CHARGE_SECS: u64 = 10 * 60;
-const MAX_CHARGE_SECS: u64 = 8 * 60 * 60;
-const MIN_PLAY_SECS: u64 = 30 * 60;
-const MAX_PLAY_SECS: u64 = 24 * 60 * 60;
+/// DualSense reported percents, high → low (100, then 95…5).
+const DRAIN_LEVELS: [u8; 11] = [100, 95, 85, 75, 65, 55, 45, 35, 25, 15, 5];
+
+const MIN_STEP_SECS: u64 = 60;
+const MAX_STEP_SECS: u64 = 6 * 60 * 60;
 
 /// Heartbeat gaps larger than this are treated as "app was closed" and skipped.
 pub const HEARTBEAT_MAX_GAP: Duration = Duration::from_secs(150);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionKind {
-    Charging,
-    DischargingFromFull,
-    PausedDischarge,
+pub enum BucketDirection {
+    Drain,
+    Charge,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaypointKind {
-    Start,
-    Percent,
-    Pause,
-    Resume,
-}
-
+/// In-progress time in the current DualSense bucket (not a session).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Waypoint {
-    /// Unix milliseconds (wall clock) for the timeline X axis.
-    pub at_ms: u64,
+pub struct InProgressBucket {
+    pub direction: BucketDirection,
     pub percent: u8,
-    pub kind: WaypointKind,
+    pub active_ms: u64,
 }
 
+/// Last-3 duration samples for one directed percent edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenSession {
-    pub kind: SessionKind,
-    pub start_percent: u8,
-    pub last_percent: u8,
-    /// Active (on + discharging/charging) milliseconds accumulated so far.
-    pub active_ms: u64,
-    pub waypoints: Vec<Waypoint>,
+pub struct StepSample {
+    pub from_percent: u8,
+    pub to_percent: u8,
+    #[serde(default)]
+    pub samples_ms: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct SerialRecord {
-    /// Unix milliseconds of last observation.
     last_seen_ms: u64,
     #[serde(default)]
-    charge_samples_ms: Vec<u64>,
+    drain_steps: Vec<StepSample>,
     #[serde(default)]
-    play_samples_ms: Vec<u64>,
+    charge_steps: Vec<StepSample>,
     #[serde(default)]
-    open: Option<OpenSession>,
+    in_progress: Option<InProgressBucket>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,13 +76,26 @@ struct AnalyticsFile {
     controllers: HashMap<String, SerialRecord>,
 }
 
-/// Snapshot of estimates / open session for UI.
+/// One step on the coverage chart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepCoverage {
+    pub from_percent: u8,
+    pub to_percent: u8,
+    /// Measured median when this edge has samples.
+    pub typical_ms: Option<u64>,
+    /// True when unmeasured but a qualifying rate exists to fill this gap.
+    pub speculative: bool,
+}
+
+/// Snapshot of estimates / coverage for UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerAnalytics {
     pub serial: String,
     pub typical_charge: Option<Duration>,
     pub typical_play: Option<Duration>,
-    pub open: Option<OpenSession>,
+    pub in_progress: Option<InProgressBucket>,
+    pub drain_coverage: Vec<StepCoverage>,
+    pub charge_coverage: Vec<StepCoverage>,
 }
 
 /// Remaining-time hint for the tray popup meta line.
@@ -112,7 +109,6 @@ pub enum EtaHint {
 pub struct AnalyticsStore {
     by_serial: HashMap<String, SerialRecord>,
     dirty: bool,
-    /// Last wall-clock observation used for heartbeat gap detection.
     last_tick_ms: Option<u64>,
 }
 
@@ -175,8 +171,6 @@ impl AnalyticsStore {
         if serial.is_empty() || serial == "unknown" {
             return false;
         }
-        // Emulated pads are only compiled into `--features dev-emulate` builds; allow
-        // them there so Developer presets can exercise analytics end-to-end.
         #[cfg(not(feature = "dev-emulate"))]
         if serial.starts_with("emu-") {
             return false;
@@ -184,7 +178,7 @@ impl AnalyticsStore {
         true
     }
 
-    /// Developer helper: inject typical charge/play samples so ETA UI can be checked.
+    /// Developer helper: seed full drain/charge step chains so ETA UI can be checked.
     #[cfg(feature = "dev-emulate")]
     pub fn dev_seed_estimates(&mut self, serial: &str) {
         if !Self::is_storable_serial(serial) {
@@ -193,31 +187,36 @@ impl AnalyticsStore {
         let now_ms = system_time_ms(SystemTime::now());
         self.ensure_record(serial, now_ms);
         let record = self.by_serial.get_mut(serial).expect("ensured");
-        push_sample(&mut record.charge_samples_ms, 2 * 60 * 60 * 1000);
-        push_sample(&mut record.play_samples_ms, 8 * 60 * 60 * 1000);
+        // ~8h full drain across 10 steps; ~2h full charge across 10 steps.
+        let drain_step = 8 * 60 * 60 * 1000 / 10;
+        let charge_step = 2 * 60 * 60 * 1000 / 10;
+        record.drain_steps.clear();
+        record.charge_steps.clear();
+        for (from, to) in drain_edges() {
+            push_step_sample(&mut record.drain_steps, from, to, drain_step);
+        }
+        for (from, to) in charge_edges() {
+            push_step_sample(&mut record.charge_steps, from, to, charge_step);
+        }
+        record.in_progress = None;
         record.last_seen_ms = now_ms;
         self.dirty = true;
     }
 
-    /// Developer helper: add active time to the open session (bypasses heartbeat gaps).
+    /// Developer helper: credit active time on the in-progress bucket.
     #[cfg(feature = "dev-emulate")]
     pub fn dev_credit_active(&mut self, serial: &str, extra: Duration) {
         let Some(record) = self.by_serial.get_mut(serial) else {
             return;
         };
-        let Some(open) = record.open.as_mut() else {
+        let Some(progress) = record.in_progress.as_mut() else {
             return;
         };
-        if matches!(
-            open.kind,
-            SessionKind::Charging | SessionKind::DischargingFromFull
-        ) {
-            open.active_ms = open.active_ms.saturating_add(extra.as_millis() as u64);
-            self.dirty = true;
-        }
+        progress.active_ms = progress.active_ms.saturating_add(extra.as_millis() as u64);
+        self.dirty = true;
     }
 
-    /// Observe a poll snapshot. When `enabled` is false, only prune/save nothing.
+    /// Observe a poll snapshot. When `enabled` is false, do nothing.
     pub fn observe(
         &mut self,
         previous: &[ControllerStatus],
@@ -242,27 +241,25 @@ impl AnalyticsStore {
         let next_by: HashMap<&str, &ControllerStatus> =
             next.iter().map(|c| (c.serial.as_str(), c)).collect();
 
-        // Heartbeat active time for pads still present with an open active session.
+        // Heartbeat: accrue only while the pad is present.
         if heartbeat_ok {
             for controller in next {
                 if !Self::is_storable_serial(&controller.serial) {
                     continue;
                 }
                 if let Some(record) = self.by_serial.get_mut(&controller.serial)
-                    && let Some(open) = record.open.as_mut()
-                    && matches!(
-                        open.kind,
-                        SessionKind::Charging | SessionKind::DischargingFromFull
-                    )
+                    && let Some(progress) = record.in_progress.as_mut()
+                    && direction_matches(progress.direction, controller.state)
+                    && progress.percent == controller.percent
                 {
-                    open.active_ms = open.active_ms.saturating_add(gap_ms);
+                    progress.active_ms = progress.active_ms.saturating_add(gap_ms);
                     record.last_seen_ms = now_ms;
                     self.dirty = true;
                 }
             }
         }
 
-        // Disconnects: pause discharge sessions.
+        // Disconnect: pause accrual (keep in_progress; no commit).
         for prev in previous {
             if !Self::is_storable_serial(&prev.serial) {
                 continue;
@@ -270,7 +267,10 @@ impl AnalyticsStore {
             if next_by.contains_key(prev.serial.as_str()) {
                 continue;
             }
-            self.on_disconnect(&prev.serial, now_ms);
+            if let Some(record) = self.by_serial.get_mut(&prev.serial) {
+                record.last_seen_ms = now_ms;
+                self.dirty = true;
+            }
         }
 
         for controller in next {
@@ -284,33 +284,6 @@ impl AnalyticsStore {
         self.prune(now_ms, keep_serial);
     }
 
-    fn on_disconnect(&mut self, serial: &str, now_ms: u64) {
-        let Some(record) = self.by_serial.get_mut(serial) else {
-            return;
-        };
-        let Some(open) = record.open.as_mut() else {
-            return;
-        };
-        if open.kind == SessionKind::DischargingFromFull {
-            open.kind = SessionKind::PausedDischarge;
-            push_waypoint(
-                &mut open.waypoints,
-                Waypoint {
-                    at_ms: now_ms,
-                    percent: open.last_percent,
-                    kind: WaypointKind::Pause,
-                },
-            );
-            record.last_seen_ms = now_ms;
-            self.dirty = true;
-        } else if open.kind == SessionKind::Charging {
-            // Charge interrupted by disconnect — abort without recording.
-            record.open = None;
-            record.last_seen_ms = now_ms;
-            self.dirty = true;
-        }
-    }
-
     fn on_controller(
         &mut self,
         prev: Option<&ControllerStatus>,
@@ -320,125 +293,199 @@ impl AnalyticsStore {
         let serial = next.serial.as_str();
         self.ensure_record(serial, now_ms);
 
-        // Abandoned / percent-rose while paused.
-        if let Some(record) = self.by_serial.get_mut(serial)
-            && let Some(open) = record.open.as_ref()
-        {
-            let abandoned = now_ms.saturating_sub(record.last_seen_ms)
-                > Duration::from_secs(ABANDONED_SESSION_DAYS * 24 * 60 * 60).as_millis() as u64;
-            if abandoned {
-                record.open = None;
-                self.dirty = true;
-            } else if open.kind == SessionKind::PausedDischarge && next.percent > open.last_percent
-            {
-                // Charged while away.
-                record.open = None;
-                self.dirty = true;
+        let want = match next.state {
+            PowerState::Discharging => Some(BucketDirection::Drain),
+            PowerState::Charging => Some(BucketDirection::Charge),
+            PowerState::Complete => {
+                self.finish_charge_to_full(serial, prev, now_ms);
+                return;
             }
-        }
+            _ => {
+                self.clear_in_progress(serial, now_ms);
+                return;
+            }
+        };
+        let want = want.expect("discharging or charging");
 
-        let open_kind = self
+        let progress = self
             .by_serial
             .get(serial)
-            .and_then(|r| r.open.as_ref())
-            .map(|o| o.kind);
+            .and_then(|r| r.in_progress.clone());
 
-        // Resume paused discharge.
-        if open_kind == Some(SessionKind::PausedDischarge) {
-            if next.state.is_discharging() && next.percent <= self.last_open_percent(serial) {
-                self.resume_discharge(serial, next.percent, now_ms);
-            } else if next.state == PowerState::Charging || next.state == PowerState::Complete {
-                // Plugging in finishes the paused play cycle.
-                self.finish_play(serial, next.percent, now_ms);
-                if next.state == PowerState::Charging {
-                    self.begin_charge(serial, next.percent, now_ms);
-                }
-                return;
-            } else if !next.state.is_discharging() {
-                // Unexpected state — abort.
-                if let Some(record) = self.by_serial.get_mut(serial) {
-                    record.open = None;
-                    record.last_seen_ms = now_ms;
-                    self.dirty = true;
-                }
+        // Mode flip or wrong-way percent: drop timer only.
+        if let Some(ref p) = progress {
+            let wrong_way = match want {
+                BucketDirection::Drain => next.percent > p.percent,
+                BucketDirection::Charge => next.percent < p.percent,
+            };
+            if p.direction != want || wrong_way {
+                self.clear_in_progress(serial, now_ms);
             }
         }
 
-        let prev_state = prev.map(|p| p.state);
-        let prev_percent = prev.map(|p| p.percent);
+        let progress = self
+            .by_serial
+            .get(serial)
+            .and_then(|r| r.in_progress.clone());
 
-        // State transitions.
-        match (prev_state, next.state) {
-            (
-                Some(PowerState::Discharging) | Some(PowerState::Unknown) | None,
-                PowerState::Charging,
-            ) => {
-                // Finish open play if any, then begin charge.
-                if matches!(
-                    self.open_kind(serial),
-                    Some(SessionKind::DischargingFromFull) | Some(SessionKind::PausedDischarge)
-                ) {
-                    self.finish_play(serial, next.percent, now_ms);
+        match want {
+            BucketDirection::Drain => {
+                if let Some(p) = progress {
+                    if next.percent < p.percent {
+                        self.commit_step(
+                            serial,
+                            BucketDirection::Drain,
+                            p.percent,
+                            next.percent,
+                            p.active_ms,
+                            now_ms,
+                        );
+                        self.start_in_progress(
+                            serial,
+                            BucketDirection::Drain,
+                            next.percent,
+                            now_ms,
+                        );
+                    } else if let Some(record) = self.by_serial.get_mut(serial) {
+                        record.last_seen_ms = now_ms;
+                    }
+                } else {
+                    self.start_in_progress(serial, BucketDirection::Drain, next.percent, now_ms);
                 }
-                self.begin_charge(serial, next.percent, now_ms);
             }
-            (Some(PowerState::Charging), PowerState::Complete) => {
-                self.finish_charge(serial, now_ms);
-            }
-            (Some(PowerState::Charging), PowerState::Discharging) => {
-                // Unplugged before complete — abort charge; maybe start from-full if at 100.
-                self.abort_charge(serial, now_ms);
-                if next.percent >= 100 {
-                    self.begin_discharge_from_full(serial, next.percent, now_ms);
+            BucketDirection::Charge => {
+                if let Some(p) = progress {
+                    if next.percent > p.percent {
+                        self.commit_step(
+                            serial,
+                            BucketDirection::Charge,
+                            p.percent,
+                            next.percent,
+                            p.active_ms,
+                            now_ms,
+                        );
+                        self.start_in_progress(
+                            serial,
+                            BucketDirection::Charge,
+                            next.percent,
+                            now_ms,
+                        );
+                    } else if next.percent == p.percent
+                        && let Some(record) = self.by_serial.get_mut(serial)
+                    {
+                        record.last_seen_ms = now_ms;
+                    }
+                } else {
+                    self.start_in_progress(serial, BucketDirection::Charge, next.percent, now_ms);
                 }
             }
-            (Some(PowerState::Complete), PowerState::Discharging) => {
-                self.begin_discharge_from_full(serial, next.percent, now_ms);
-            }
-            (Some(PowerState::Complete), PowerState::Charging) => {
-                // Still on charger after complete — ignore.
-            }
-            (Some(PowerState::Discharging), PowerState::Complete) => {
-                // Unusual (USB complete without charging edge); treat as plugged full.
-            }
-            _ => {}
         }
+    }
 
-        // Empty-bucket finish while discharging from full.
-        if matches!(
-            self.open_kind(serial),
-            Some(SessionKind::DischargingFromFull)
-        ) && next.state.is_discharging()
-            && next.percent <= PLAY_EMPTY_PERCENT
-            && prev_percent.is_some_and(|p| p > PLAY_EMPTY_PERCENT)
+    fn finish_charge_to_full(
+        &mut self,
+        serial: &str,
+        prev: Option<&ControllerStatus>,
+        now_ms: u64,
+    ) {
+        self.ensure_record(serial, now_ms);
+        let progress = self
+            .by_serial
+            .get(serial)
+            .and_then(|r| r.in_progress.clone());
+        if let Some(p) = progress {
+            if p.direction == BucketDirection::Charge && p.percent < FULL_PERCENT {
+                self.commit_step(
+                    serial,
+                    BucketDirection::Charge,
+                    p.percent,
+                    FULL_PERCENT,
+                    p.active_ms,
+                    now_ms,
+                );
+            }
+        } else if let Some(prev) = prev
+            && prev.state == PowerState::Charging
+            && prev.percent < FULL_PERCENT
         {
-            self.finish_play(serial, next.percent, now_ms);
+            // Edge Complete without in_progress (e.g. just enabled) — nothing to commit.
+        }
+        self.clear_in_progress(serial, now_ms);
+    }
+
+    fn start_in_progress(
+        &mut self,
+        serial: &str,
+        direction: BucketDirection,
+        percent: u8,
+        now_ms: u64,
+    ) {
+        let record = self.by_serial.get_mut(serial).expect("ensured");
+        record.in_progress = Some(InProgressBucket {
+            direction,
+            percent,
+            active_ms: 0,
+        });
+        record.last_seen_ms = now_ms;
+        self.dirty = true;
+    }
+
+    fn clear_in_progress(&mut self, serial: &str, now_ms: u64) {
+        let Some(record) = self.by_serial.get_mut(serial) else {
+            return;
+        };
+        if record.in_progress.take().is_some() {
+            self.dirty = true;
+        }
+        record.last_seen_ms = now_ms;
+    }
+
+    fn commit_step(
+        &mut self,
+        serial: &str,
+        direction: BucketDirection,
+        from: u8,
+        to: u8,
+        active_ms: u64,
+        now_ms: u64,
+    ) {
+        if from == to {
             return;
         }
-
-        // Percent change waypoint on active sessions.
-        if let Some(record) = self.by_serial.get_mut(serial)
-            && let Some(open) = record.open.as_mut()
-            && matches!(
-                open.kind,
-                SessionKind::Charging | SessionKind::DischargingFromFull
-            )
-            && open.last_percent != next.percent
-        {
-            open.last_percent = next.percent;
-            push_waypoint(
-                &mut open.waypoints,
-                Waypoint {
-                    at_ms: now_ms,
-                    percent: next.percent,
-                    kind: WaypointKind::Percent,
-                },
-            );
-            record.last_seen_ms = now_ms;
-            self.dirty = true;
-        } else if let Some(record) = self.by_serial.get_mut(serial) {
-            record.last_seen_ms = now_ms;
+        let secs = active_ms / 1000;
+        if !(MIN_STEP_SECS..=MAX_STEP_SECS).contains(&secs) {
+            if let Some(record) = self.by_serial.get_mut(serial) {
+                record.last_seen_ms = now_ms;
+                self.dirty = true;
+            }
+            return;
         }
+        let edges = match direction {
+            BucketDirection::Drain => expand_drain(from, to),
+            BucketDirection::Charge => expand_charge(from, to),
+        };
+        let Some(record) = self.by_serial.get_mut(serial) else {
+            return;
+        };
+        let steps = match direction {
+            BucketDirection::Drain => &mut record.drain_steps,
+            BucketDirection::Charge => &mut record.charge_steps,
+        };
+        if edges.len() <= 1 {
+            // Single known edge, or unrecognized jump stored as-is.
+            let (a, b) = edges.first().copied().unwrap_or((from, to));
+            push_step_sample(steps, a, b, active_ms);
+        } else {
+            let per = active_ms / edges.len() as u64;
+            if per >= MIN_STEP_SECS * 1000 {
+                for (a, b) in edges {
+                    push_step_sample(steps, a, b, per);
+                }
+            }
+            // Multi-bucket jump with too little time per edge — skip rather than poison.
+        }
+        record.last_seen_ms = now_ms;
+        self.dirty = true;
     }
 
     fn ensure_record(&mut self, serial: &str, now_ms: u64) {
@@ -449,173 +496,6 @@ impl AnalyticsStore {
                 ..SerialRecord::default()
             }
         });
-    }
-
-    fn open_kind(&self, serial: &str) -> Option<SessionKind> {
-        self.by_serial
-            .get(serial)
-            .and_then(|r| r.open.as_ref())
-            .map(|o| o.kind)
-    }
-
-    fn last_open_percent(&self, serial: &str) -> u8 {
-        self.by_serial
-            .get(serial)
-            .and_then(|r| r.open.as_ref())
-            .map(|o| o.last_percent)
-            .unwrap_or(0)
-    }
-
-    fn begin_charge(&mut self, serial: &str, percent: u8, now_ms: u64) {
-        let record = self.by_serial.get_mut(serial).expect("ensured");
-        if matches!(
-            record.open.as_ref().map(|o| o.kind),
-            Some(SessionKind::Charging)
-        ) {
-            return;
-        }
-        let mut waypoints = Vec::new();
-        push_waypoint(
-            &mut waypoints,
-            Waypoint {
-                at_ms: now_ms,
-                percent,
-                kind: WaypointKind::Start,
-            },
-        );
-        record.open = Some(OpenSession {
-            kind: SessionKind::Charging,
-            start_percent: percent,
-            last_percent: percent,
-            active_ms: 0,
-            waypoints,
-        });
-        record.last_seen_ms = now_ms;
-        self.dirty = true;
-    }
-
-    fn abort_charge(&mut self, serial: &str, now_ms: u64) {
-        if let Some(record) = self.by_serial.get_mut(serial)
-            && matches!(
-                record.open.as_ref().map(|o| o.kind),
-                Some(SessionKind::Charging)
-            )
-        {
-            record.open = None;
-            record.last_seen_ms = now_ms;
-            self.dirty = true;
-        }
-    }
-
-    fn finish_charge(&mut self, serial: &str, now_ms: u64) {
-        let Some(record) = self.by_serial.get_mut(serial) else {
-            return;
-        };
-        let Some(open) = record.open.take() else {
-            return;
-        };
-        if open.kind != SessionKind::Charging {
-            record.open = Some(open);
-            return;
-        }
-        let secs = open.active_ms / 1000;
-        if open.start_percent <= CHARGE_START_MAX_PERCENT
-            && (MIN_CHARGE_SECS..=MAX_CHARGE_SECS).contains(&secs)
-        {
-            push_sample(&mut record.charge_samples_ms, open.active_ms);
-        }
-        record.last_seen_ms = now_ms;
-        self.dirty = true;
-    }
-
-    fn begin_discharge_from_full(&mut self, serial: &str, percent: u8, now_ms: u64) {
-        let record = self.by_serial.get_mut(serial).expect("ensured");
-        if matches!(
-            record.open.as_ref().map(|o| o.kind),
-            Some(SessionKind::DischargingFromFull) | Some(SessionKind::PausedDischarge)
-        ) {
-            return;
-        }
-        let start = percent.max(100);
-        let mut waypoints = Vec::new();
-        push_waypoint(
-            &mut waypoints,
-            Waypoint {
-                at_ms: now_ms,
-                percent: start,
-                kind: WaypointKind::Start,
-            },
-        );
-        record.open = Some(OpenSession {
-            kind: SessionKind::DischargingFromFull,
-            start_percent: start,
-            last_percent: percent,
-            active_ms: 0,
-            waypoints,
-        });
-        record.last_seen_ms = now_ms;
-        self.dirty = true;
-    }
-
-    fn resume_discharge(&mut self, serial: &str, percent: u8, now_ms: u64) {
-        let Some(record) = self.by_serial.get_mut(serial) else {
-            return;
-        };
-        let Some(open) = record.open.as_mut() else {
-            return;
-        };
-        if open.kind != SessionKind::PausedDischarge {
-            return;
-        }
-        open.kind = SessionKind::DischargingFromFull;
-        open.last_percent = percent;
-        push_waypoint(
-            &mut open.waypoints,
-            Waypoint {
-                at_ms: now_ms,
-                percent,
-                kind: WaypointKind::Resume,
-            },
-        );
-        record.last_seen_ms = now_ms;
-        self.dirty = true;
-    }
-
-    fn finish_play(&mut self, serial: &str, end_percent: u8, now_ms: u64) {
-        let Some(record) = self.by_serial.get_mut(serial) else {
-            return;
-        };
-        let Some(open) = record.open.take() else {
-            return;
-        };
-        if !matches!(
-            open.kind,
-            SessionKind::DischargingFromFull | SessionKind::PausedDischarge
-        ) {
-            record.open = Some(open);
-            return;
-        }
-        let start = open.start_percent.max(end_percent);
-        let used = start.saturating_sub(end_percent);
-        let empty_finish = end_percent <= PLAY_EMPTY_PERCENT;
-        let secs = open.active_ms / 1000;
-        if (used >= PLAY_MIN_PERCENT_USED || empty_finish)
-            && (MIN_PLAY_SECS..=MAX_PLAY_SECS).contains(&secs)
-            && used > 0
-        {
-            // Scale to a full 0–100% drain estimate.
-            let scaled = open
-                .active_ms
-                .saturating_mul(100)
-                .checked_div(u64::from(used))
-                .unwrap_or(open.active_ms);
-            let scaled_secs = scaled / 1000;
-            if (MIN_PLAY_SECS..=MAX_PLAY_SECS).contains(&scaled_secs) {
-                push_sample(&mut record.play_samples_ms, scaled);
-            }
-        }
-        record.last_seen_ms = now_ms;
-        self.dirty = true;
     }
 
     fn prune(&mut self, now_ms: u64, keep_serial: impl Fn(&str) -> bool) {
@@ -647,73 +527,243 @@ impl AnalyticsStore {
     }
 
     pub fn typical_charge(&self, serial: &str) -> Option<Duration> {
-        self.by_serial
-            .get(serial)
-            .and_then(|r| median_ms(&r.charge_samples_ms))
-            .map(Duration::from_millis)
+        let record = self.by_serial.get(serial)?;
+        let ms = speculative_chain_ms(&record.charge_steps, &charge_edges())?;
+        Some(Duration::from_millis(ms))
     }
 
     pub fn typical_play(&self, serial: &str) -> Option<Duration> {
-        self.by_serial
-            .get(serial)
-            .and_then(|r| median_ms(&r.play_samples_ms))
-            .map(Duration::from_millis)
+        let record = self.by_serial.get(serial)?;
+        let ms = speculative_chain_ms(&record.drain_steps, &drain_edges())?;
+        Some(Duration::from_millis(ms))
     }
 
-    #[allow(dead_code)] // Used by unit tests and handy for future UI.
-    pub fn open_session(&self, serial: &str) -> Option<&OpenSession> {
-        self.by_serial.get(serial).and_then(|r| r.open.as_ref())
+    pub fn in_progress(&self, serial: &str) -> Option<&InProgressBucket> {
+        self.by_serial
+            .get(serial)
+            .and_then(|r| r.in_progress.as_ref())
     }
 
     pub fn panel_rows(&self) -> Vec<ControllerAnalytics> {
-        let mut rows: Vec<_> = self
-            .by_serial
-            .iter()
-            .filter(|(_, record)| {
-                !record.charge_samples_ms.is_empty()
-                    || !record.play_samples_ms.is_empty()
-                    || record.open.is_some()
+        let mut serials: Vec<_> = self.by_serial.keys().cloned().collect();
+        serials.sort();
+        serials
+            .into_iter()
+            .filter_map(|serial| {
+                let record = self.by_serial.get(&serial)?;
+                if record.drain_steps.is_empty()
+                    && record.charge_steps.is_empty()
+                    && record.in_progress.is_none()
+                {
+                    return None;
+                }
+                Some(ControllerAnalytics {
+                    serial: serial.clone(),
+                    typical_charge: self.typical_charge(&serial),
+                    typical_play: self.typical_play(&serial),
+                    in_progress: self.in_progress(&serial).cloned(),
+                    drain_coverage: coverage_list(&record.drain_steps, &drain_edges()),
+                    charge_coverage: coverage_list(&record.charge_steps, &charge_edges()),
+                })
             })
-            .map(|(serial, record)| ControllerAnalytics {
-                serial: serial.clone(),
-                typical_charge: median_ms(&record.charge_samples_ms).map(Duration::from_millis),
-                typical_play: median_ms(&record.play_samples_ms).map(Duration::from_millis),
-                open: record.open.clone(),
-            })
-            .collect();
-        rows.sort_by(|a, b| a.serial.cmp(&b.serial));
-        rows
+            .collect()
     }
 
-    /// ETA for a live controller, if enough samples exist.
     pub fn eta_for(&self, controller: &ControllerStatus) -> Option<EtaHint> {
         match controller.state {
-            PowerState::Discharging => {
-                let typical = self.typical_play(&controller.serial)?;
-                let left = typical
-                    .saturating_mul(u32::from(controller.percent))
-                    .checked_div(100)?;
-                if left.is_zero() {
-                    None
-                } else {
-                    Some(EtaHint::PlayLeft(left))
-                }
-            }
-            PowerState::Charging => {
-                let typical = self.typical_charge(&controller.serial)?;
-                let remain_pct = 100u8.saturating_sub(controller.percent);
-                let left = typical
-                    .saturating_mul(u32::from(remain_pct))
-                    .checked_div(100)?;
-                if left.is_zero() {
-                    None
-                } else {
-                    Some(EtaHint::ChargeToFull(left))
-                }
-            }
+            PowerState::Discharging => self.eta_play_at(&controller.serial, controller.percent),
+            PowerState::Charging => self.eta_charge_at(&controller.serial, controller.percent),
             _ => None,
         }
     }
+
+    /// Remaining play time at `percent` (used for live drain and disconnected last-known %).
+    pub fn eta_play_at(&self, serial: &str, percent: u8) -> Option<EtaHint> {
+        let record = self.by_serial.get(serial)?;
+        let edges = drain_edges_from(percent)?;
+        let ms = speculative_chain_ms(&record.drain_steps, &edges)?;
+        let left = Duration::from_millis(ms);
+        if left.is_zero() {
+            None
+        } else {
+            Some(EtaHint::PlayLeft(left))
+        }
+    }
+
+    fn eta_charge_at(&self, serial: &str, percent: u8) -> Option<EtaHint> {
+        let record = self.by_serial.get(serial)?;
+        let edges = charge_edges_from(percent)?;
+        let ms = speculative_chain_ms(&record.charge_steps, &edges)?;
+        let left = Duration::from_millis(ms);
+        if left.is_zero() {
+            None
+        } else {
+            Some(EtaHint::ChargeToFull(left))
+        }
+    }
+}
+
+fn direction_matches(direction: BucketDirection, state: PowerState) -> bool {
+    match direction {
+        BucketDirection::Drain => state.is_discharging(),
+        BucketDirection::Charge => state == PowerState::Charging,
+    }
+}
+
+fn drain_edges() -> Vec<(u8, u8)> {
+    DRAIN_LEVELS.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+fn charge_edges() -> Vec<(u8, u8)> {
+    let mut levels = DRAIN_LEVELS;
+    levels.reverse();
+    levels.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+fn drain_edges_from(current: u8) -> Option<Vec<(u8, u8)>> {
+    if current <= EMPTY_PERCENT {
+        return None;
+    }
+    let start = DRAIN_LEVELS.iter().position(|&p| p <= current)?;
+    if start + 1 >= DRAIN_LEVELS.len() {
+        return None;
+    }
+    Some(
+        DRAIN_LEVELS[start..]
+            .windows(2)
+            .map(|w| (w[0], w[1]))
+            .collect(),
+    )
+}
+
+fn charge_edges_from(current: u8) -> Option<Vec<(u8, u8)>> {
+    if current >= FULL_PERCENT {
+        return None;
+    }
+    let mut levels = DRAIN_LEVELS;
+    levels.reverse(); // 5, 15, …, 100
+    let start = levels.iter().position(|&p| p >= current)?;
+    if start + 1 >= levels.len() {
+        return None;
+    }
+    Some(levels[start..].windows(2).map(|w| (w[0], w[1])).collect())
+}
+
+fn expand_drain(from: u8, to: u8) -> Vec<(u8, u8)> {
+    if from <= to {
+        return Vec::new();
+    }
+    let Some(i0) = DRAIN_LEVELS.iter().position(|&p| p == from) else {
+        return Vec::new();
+    };
+    let Some(i1) = DRAIN_LEVELS.iter().position(|&p| p == to) else {
+        return Vec::new();
+    };
+    if i1 <= i0 {
+        return Vec::new();
+    }
+    DRAIN_LEVELS[i0..=i1]
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .collect()
+}
+
+fn expand_charge(from: u8, to: u8) -> Vec<(u8, u8)> {
+    if to <= from {
+        return Vec::new();
+    }
+    let mut levels = DRAIN_LEVELS;
+    levels.reverse();
+    let Some(i0) = levels.iter().position(|&p| p == from) else {
+        return Vec::new();
+    };
+    let Some(i1) = levels.iter().position(|&p| p == to) else {
+        return Vec::new();
+    };
+    if i1 <= i0 {
+        return Vec::new();
+    }
+    levels[i0..=i1].windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+fn push_step_sample(steps: &mut Vec<StepSample>, from: u8, to: u8, duration_ms: u64) {
+    if let Some(existing) = steps
+        .iter_mut()
+        .find(|s| s.from_percent == from && s.to_percent == to)
+    {
+        existing.samples_ms.push(duration_ms);
+        while existing.samples_ms.len() > STEP_RING_CAP {
+            existing.samples_ms.remove(0);
+        }
+    } else {
+        steps.push(StepSample {
+            from_percent: from,
+            to_percent: to,
+            samples_ms: vec![duration_ms],
+        });
+    }
+}
+
+fn step_median(steps: &[StepSample], from: u8, to: u8) -> Option<u64> {
+    steps
+        .iter()
+        .find(|s| s.from_percent == from && s.to_percent == to)
+        .and_then(|s| median_ms(&s.samples_ms))
+}
+
+/// Half-bucket DualSense tops — recorded, but never used as speculative rate sources.
+fn is_half_bucket_edge(from: u8, to: u8) -> bool {
+    (from == FULL_PERCENT && to == 95) || (from == 95 && to == FULL_PERCENT)
+}
+
+/// Median ms-per-percent from qualifying (non half-bucket) learned steps.
+fn default_rate_ms_per_percent(steps: &[StepSample]) -> Option<u64> {
+    let mut rates = Vec::new();
+    for step in steps {
+        if is_half_bucket_edge(step.from_percent, step.to_percent) {
+            continue;
+        }
+        let Some(med) = median_ms(&step.samples_ms) else {
+            continue;
+        };
+        let delta = u64::from(step.from_percent.abs_diff(step.to_percent));
+        if delta == 0 {
+            continue;
+        }
+        rates.push(med / delta);
+    }
+    median_ms(&rates)
+}
+
+/// Sum path duration: measured medians where present, else rate × percent delta.
+fn speculative_chain_ms(steps: &[StepSample], edges: &[(u8, u8)]) -> Option<u64> {
+    if edges.is_empty() {
+        return None;
+    }
+    let rate = default_rate_ms_per_percent(steps)?;
+    let mut total = 0u64;
+    for &(from, to) in edges {
+        let delta = u64::from(from.abs_diff(to));
+        let ms = step_median(steps, from, to).unwrap_or_else(|| rate.saturating_mul(delta));
+        total = total.saturating_add(ms);
+    }
+    Some(total)
+}
+
+fn coverage_list(steps: &[StepSample], edges: &[(u8, u8)]) -> Vec<StepCoverage> {
+    let can_speculate = default_rate_ms_per_percent(steps).is_some();
+    edges
+        .iter()
+        .map(|&(from, to)| {
+            let typical_ms = step_median(steps, from, to);
+            StepCoverage {
+                from_percent: from,
+                to_percent: to,
+                typical_ms,
+                speculative: typical_ms.is_none() && can_speculate,
+            }
+        })
+        .collect()
 }
 
 /// Format a duration for UI: `~2h 15m`, `~40m`, `~1h`.
@@ -733,31 +783,17 @@ pub fn format_duration_short(duration: Duration) -> String {
     }
 }
 
-/// Compact ring label: `est. 8h`, `est. 40m`.
+/// Compact ring label: `~8h`, `~40m`.
 pub fn format_eta_ring(hint: EtaHint) -> String {
     let duration = match hint {
         EtaHint::PlayLeft(d) | EtaHint::ChargeToFull(d) => d,
     };
     let total_mins = duration.as_secs().div_ceil(60).max(1);
     if total_mins < 60 {
-        format!("est. {total_mins}m")
+        format!("~{total_mins}m")
     } else {
         let hours = total_mins / 60;
-        format!("est. {hours}h")
-    }
-}
-
-fn push_sample(ring: &mut Vec<u64>, value_ms: u64) {
-    ring.push(value_ms);
-    while ring.len() > SAMPLE_RING_CAP {
-        ring.remove(0);
-    }
-}
-
-fn push_waypoint(waypoints: &mut Vec<Waypoint>, point: Waypoint) {
-    waypoints.push(point);
-    while waypoints.len() > WAYPOINT_CAP {
-        waypoints.remove(0);
+        format!("~{hours}h")
     }
 }
 
@@ -844,222 +880,327 @@ mod tests {
         store.observe(prev, next, true, |_| false, at);
     }
 
-    #[test]
-    fn charge_from_empty_records_sample() {
-        let mut store = AnalyticsStore::default();
-        let discharging = vec![pad("a", 5, PowerState::Discharging)];
-        let charging = vec![pad("a", 5, PowerState::Charging)];
-        let complete = vec![pad("a", 100, PowerState::Complete)];
-
-        observe_enabled(&mut store, &[], &discharging, ms(1_000));
-        observe_enabled(&mut store, &discharging, &charging, ms(1_060));
-        // Heartbeats during charge (~1 hour).
-        for i in 1..=40 {
-            observe_enabled(&mut store, &charging, &charging, ms(1_060 + i * 90));
+    /// Accrue `minutes` of active time at a fixed percent/state via heartbeats.
+    fn accrue(
+        store: &mut AnalyticsStore,
+        serial: &str,
+        percent: u8,
+        state: PowerState,
+        start: SystemTime,
+        minutes: u64,
+    ) -> SystemTime {
+        let cur = vec![pad(serial, percent, state)];
+        let mut t = start;
+        // 90s heartbeats; need minutes*60/90 ticks.
+        let ticks = (minutes * 60 / 90).max(1);
+        for _ in 0..ticks {
+            t += Duration::from_secs(90);
+            observe_enabled(store, &cur, &cur, t);
         }
-        let last = ms(1_060 + 40 * 90);
+        t
+    }
+
+    #[test]
+    fn drain_heartbeats_accrue_until_drop() {
+        let mut store = AnalyticsStore::default();
+        let forty_five = vec![pad("a", 45, PowerState::Discharging)];
+        observe_enabled(&mut store, &[], &forty_five, ms(1_000));
+        assert_eq!(store.in_progress("a").map(|p| p.percent), Some(45));
+        let t = accrue(&mut store, "a", 45, PowerState::Discharging, ms(1_000), 5);
+        assert!(store.by_serial["a"].drain_steps.is_empty());
+        let thirty_five = vec![pad("a", 35, PowerState::Discharging)];
         observe_enabled(
             &mut store,
-            &charging,
-            &complete,
-            last + Duration::from_secs(90),
+            &forty_five,
+            &thirty_five,
+            t + Duration::from_secs(90),
         );
-
-        let typical = store.typical_charge("a").expect("charge sample");
-        assert!(typical.as_secs() >= MIN_CHARGE_SECS);
-        assert!(store.open_session("a").is_none());
+        let steps = &store.by_serial["a"].drain_steps;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].from_percent, 45);
+        assert_eq!(steps[0].to_percent, 35);
+        assert!(steps[0].samples_ms[0] >= MIN_STEP_SECS * 1000);
     }
 
     #[test]
-    fn short_top_up_charge_ignored() {
+    fn drain_step_survives_charge() {
         let mut store = AnalyticsStore::default();
-        let mid = vec![pad("a", 95, PowerState::Discharging)];
-        let charging = vec![pad("a", 95, PowerState::Charging)];
-        let complete = vec![pad("a", 100, PowerState::Complete)];
-
-        observe_enabled(&mut store, &[], &mid, ms(1_000));
-        observe_enabled(&mut store, &mid, &charging, ms(1_060));
-        for i in 1..=20 {
-            observe_enabled(&mut store, &charging, &charging, ms(1_060 + i * 90));
-        }
-        observe_enabled(&mut store, &charging, &complete, ms(1_060 + 21 * 90));
-        assert!(store.typical_charge("a").is_none());
+        let forty_five = vec![pad("a", 45, PowerState::Discharging)];
+        let thirty_five = vec![pad("a", 35, PowerState::Discharging)];
+        observe_enabled(&mut store, &[], &forty_five, ms(1_000));
+        let t = accrue(&mut store, "a", 45, PowerState::Discharging, ms(1_000), 5);
+        observe_enabled(
+            &mut store,
+            &forty_five,
+            &thirty_five,
+            t + Duration::from_secs(90),
+        );
+        let charging = vec![pad("a", 35, PowerState::Charging)];
+        observe_enabled(
+            &mut store,
+            &thirty_five,
+            &charging,
+            t + Duration::from_secs(180),
+        );
+        assert_eq!(store.by_serial["a"].drain_steps.len(), 1);
+        assert_eq!(
+            store.in_progress("a").map(|p| p.direction),
+            Some(BucketDirection::Charge)
+        );
     }
 
     #[test]
-    fn play_from_full_to_mid_records_scaled() {
+    fn drain_one_step_unlocks_speculative_eta() {
         let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-        let mid = vec![pad("a", 40, PowerState::Discharging)];
-        let charging = vec![pad("a", 40, PowerState::Charging)];
-
-        observe_enabled(&mut store, &[], &full, ms(1_000));
-        observe_enabled(&mut store, &full, &unplugged, ms(1_060));
-        // ~2 hours active drain.
-        for i in 1..=80 {
-            let pct = if i <= 40 { 100 } else { 40 };
-            let state = vec![pad("a", pct, PowerState::Discharging)];
-            let prev_pct = if i <= 40 { 100 } else { 40 };
-            let prev = vec![pad("a", prev_pct, PowerState::Discharging)];
-            // First transition to 40% at i==40
-            let current = if i == 40 { mid.clone() } else { state };
-            let previous = if i == 1 {
-                unplugged.clone()
-            } else if i == 40 {
-                vec![pad("a", 100, PowerState::Discharging)]
-            } else {
-                prev
-            };
-            observe_enabled(&mut store, &previous, &current, ms(1_060 + i * 90));
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![StepSample {
+                    from_percent: 45,
+                    to_percent: 35,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        // 10% in 5 min → 0.5 min per %. At 45%: 45→5 = 40% → 20 min.
+        match store.eta_for(&pad("a", 45, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 20 * 60),
+            other => panic!("expected ETA at 45%, got {other:?}"),
         }
-        let end = ms(1_060 + 80 * 90);
-        observe_enabled(&mut store, &mid, &charging, end + Duration::from_secs(90));
-
-        let typical = store.typical_play("a").expect("play sample");
-        // 60% used over ~2h → scaled ~3.3h full drain.
-        assert!(typical.as_secs() >= MIN_PLAY_SECS);
-        assert!(store.open_session("a").is_some()); // charge began
+        // At 25%: 25→5 = 20% → 10 min.
+        match store.eta_for(&pad("a", 25, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 10 * 60),
+            other => panic!("expected ETA at 25%, got {other:?}"),
+        }
+        let typical = store.typical_play("a").expect("speculative typical");
+        // Full 100→5 = 95% → 47.5 min.
+        assert_eq!(typical.as_secs(), 47 * 60 + 30);
     }
 
     #[test]
-    fn short_100_to_90_ignored() {
+    fn drain_half_bucket_alone_does_not_speculate() {
         let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-        let ninety = vec![pad("a", 90, PowerState::Discharging)];
-        let charging = vec![pad("a", 90, PowerState::Charging)];
-
-        observe_enabled(&mut store, &[], &full, ms(1_000));
-        observe_enabled(&mut store, &full, &unplugged, ms(1_060));
-        for i in 1..=30 {
-            observe_enabled(&mut store, &unplugged, &unplugged, ms(1_060 + i * 90));
-        }
-        observe_enabled(&mut store, &unplugged, &ninety, ms(1_060 + 31 * 90));
-        for i in 32..=50 {
-            observe_enabled(&mut store, &ninety, &ninety, ms(1_060 + i * 90));
-        }
-        observe_enabled(&mut store, &ninety, &charging, ms(1_060 + 51 * 90));
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![StepSample {
+                    from_percent: 100,
+                    to_percent: 95,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        assert!(
+            store
+                .eta_for(&pad("a", 100, PowerState::Discharging))
+                .is_none()
+        );
         assert!(store.typical_play("a").is_none());
     }
 
     #[test]
-    fn multi_sitting_play_cycle_pauses() {
+    fn drain_measured_preferred_over_speculation() {
         let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-        let eighty = vec![pad("a", 80, PowerState::Discharging)];
-        let sixty = vec![pad("a", 60, PowerState::Discharging)];
-        let empty = vec![pad("a", 5, PowerState::Discharging)];
-
-        observe_enabled(&mut store, &[], &full, ms(1_000));
-        observe_enabled(&mut store, &full, &unplugged, ms(1_060));
-        // Sitting 1.
-        for i in 1..=20 {
-            observe_enabled(&mut store, &unplugged, &unplugged, ms(1_060 + i * 90));
-        }
-        observe_enabled(&mut store, &unplugged, &eighty, ms(1_060 + 21 * 90));
-        // Disconnect (pause).
-        observe_enabled(&mut store, &eighty, &[], ms(1_060 + 22 * 90));
-        assert_eq!(
-            store.open_session("a").map(|o| o.kind),
-            Some(SessionKind::PausedDischarge)
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![
+                    StepSample {
+                        from_percent: 45,
+                        to_percent: 35,
+                        samples_ms: vec![10 * 60 * 1000], // 1 min/%
+                    },
+                    StepSample {
+                        from_percent: 25,
+                        to_percent: 15,
+                        samples_ms: vec![2 * 60 * 1000], // measured faster
+                    },
+                ],
+                ..SerialRecord::default()
+            },
         );
-        let waypoints_before = store.open_session("a").unwrap().waypoints.len();
-        assert!(waypoints_before >= 2);
-
-        // Gap overnight — should not count (large heartbeat gap on reconnect).
-        let day2 = ms(1_060 + 22 * 90 + 20 * 60 * 60);
-        observe_enabled(&mut store, &[], &eighty, day2);
-        assert_eq!(
-            store.open_session("a").map(|o| o.kind),
-            Some(SessionKind::DischargingFromFull)
-        );
-        // Sitting 2.
-        for i in 1..=20 {
-            observe_enabled(
-                &mut store,
-                &eighty,
-                &eighty,
-                day2 + Duration::from_secs(i * 90),
-            );
+        // Rate from both qualifying: medians 1 min/% and 0.2 min/% → median of rates.
+        // rates = [60000, 12000], median of 2 = average = 36000 ms/%
+        // At 25%: 25→15 measured 2m + 15→5 speculated 36000*10 = 6m → 8m
+        match store.eta_for(&pad("a", 25, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 8 * 60),
+            other => panic!("unexpected {other:?}"),
         }
-        let after_sit2 = day2 + Duration::from_secs(21 * 90);
-        observe_enabled(&mut store, &eighty, &sixty, after_sit2);
+    }
+
+    #[test]
+    fn drain_disconnect_pauses_then_drop_commits() {
+        let mut store = AnalyticsStore::default();
+        let thirty_five = vec![pad("a", 35, PowerState::Discharging)];
+        observe_enabled(&mut store, &[], &thirty_five, ms(1_000));
+        let t = accrue(&mut store, "a", 35, PowerState::Discharging, ms(1_000), 3);
+        observe_enabled(&mut store, &thirty_five, &[], t + Duration::from_secs(90));
+        assert!(store.in_progress("a").is_some());
+        // Overnight gap — no accrual.
+        let day2 = t + Duration::from_secs(20 * 60 * 60);
+        observe_enabled(&mut store, &[], &thirty_five, day2);
+        let t2 = accrue(&mut store, "a", 35, PowerState::Discharging, day2, 3);
+        let twenty_five = vec![pad("a", 25, PowerState::Discharging)];
         observe_enabled(
             &mut store,
-            &sixty,
-            &[],
-            after_sit2 + Duration::from_secs(90),
+            &thirty_five,
+            &twenty_five,
+            t2 + Duration::from_secs(90),
         );
-
-        // Sitting 3 to empty.
-        let day3 = after_sit2 + Duration::from_secs(90 + 20 * 60 * 60);
-        observe_enabled(&mut store, &[], &sixty, day3);
-        for i in 1..=25 {
-            observe_enabled(
-                &mut store,
-                &sixty,
-                &sixty,
-                day3 + Duration::from_secs(i * 90),
-            );
-        }
-        let end = day3 + Duration::from_secs(26 * 90);
-        observe_enabled(&mut store, &sixty, &empty, end);
-
-        let typical = store.typical_play("a").expect("multi-sitting cycle");
-        assert!(typical.as_secs() >= MIN_PLAY_SECS);
-        assert!(store.open_session("a").is_none());
+        let sample = store.by_serial["a"].drain_steps[0].samples_ms[0];
+        // ~6 minutes total across sittings, not overnight.
+        assert!((5 * 60 * 1000..15 * 60 * 1000).contains(&sample));
     }
 
     #[test]
-    fn reconnect_higher_percent_aborts_paused() {
+    fn full_drain_chain_gives_typical_and_eta() {
         let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-        let eighty = vec![pad("a", 80, PowerState::Discharging)];
-        let ninety = vec![pad("a", 90, PowerState::Discharging)];
-
-        observe_enabled(&mut store, &[], &full, ms(1_000));
-        observe_enabled(&mut store, &full, &unplugged, ms(1_060));
-        observe_enabled(&mut store, &unplugged, &eighty, ms(1_150));
-        observe_enabled(&mut store, &eighty, &[], ms(1_240));
-        observe_enabled(&mut store, &[], &ninety, ms(1_330));
-        assert!(store.open_session("a").is_none());
-    }
-
-    #[test]
-    fn waypoints_on_events_not_heartbeat_only() {
-        let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-
-        observe_enabled(&mut store, &[], &full, ms(1_000));
-        observe_enabled(&mut store, &full, &unplugged, ms(1_060));
-        let after_start = store.open_session("a").unwrap().waypoints.len();
-        assert_eq!(after_start, 1);
-        for i in 1..=5 {
-            observe_enabled(&mut store, &unplugged, &unplugged, ms(1_060 + i * 90));
+        let mut steps = Vec::new();
+        for (from, to) in drain_edges() {
+            steps.push(StepSample {
+                from_percent: from,
+                to_percent: to,
+                samples_ms: vec![10 * 60 * 1000],
+            });
         }
-        assert_eq!(
-            store.open_session("a").unwrap().waypoints.len(),
-            after_start,
-            "heartbeat must not add waypoints"
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: steps,
+                ..SerialRecord::default()
+            },
         );
-        let ninety = vec![pad("a", 90, PowerState::Discharging)];
-        observe_enabled(&mut store, &unplugged, &ninety, ms(1_060 + 6 * 90));
-        assert_eq!(
-            store.open_session("a").unwrap().waypoints.len(),
-            after_start + 1
-        );
+        let typical = store.typical_play("a").expect("full chain");
+        assert_eq!(typical.as_secs(), 10 * 60 * drain_edges().len() as u64);
+        match store.eta_for(&pad("a", 85, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => {
+                let edges = drain_edges_from(85).unwrap();
+                assert_eq!(d.as_secs(), 10 * 60 * edges.len() as u64);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
-    fn ring_keeps_five_samples() {
-        let mut ring = vec![1, 2, 3, 4, 5];
-        push_sample(&mut ring, 6);
-        assert_eq!(ring, vec![2, 3, 4, 5, 6]);
-        assert_eq!(median_ms(&ring), Some(4));
+    fn charge_step_survives_unplug() {
+        let mut store = AnalyticsStore::default();
+        let five = vec![pad("a", 5, PowerState::Charging)];
+        let fifteen = vec![pad("a", 15, PowerState::Charging)];
+        observe_enabled(&mut store, &[], &five, ms(1_000));
+        let t = accrue(&mut store, "a", 5, PowerState::Charging, ms(1_000), 5);
+        observe_enabled(&mut store, &five, &fifteen, t + Duration::from_secs(90));
+        let discharging = vec![pad("a", 15, PowerState::Discharging)];
+        observe_enabled(
+            &mut store,
+            &fifteen,
+            &discharging,
+            t + Duration::from_secs(180),
+        );
+        assert_eq!(store.by_serial["a"].charge_steps.len(), 1);
+        assert_eq!(store.by_serial["a"].charge_steps[0].from_percent, 5);
+    }
+
+    #[test]
+    fn charge_one_step_unlocks_speculative_eta() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                charge_steps: vec![StepSample {
+                    from_percent: 5,
+                    to_percent: 15,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        // 10% in 5 min → 0.5 min/%. At 5%: 5→100 = 95% → 47.5 min.
+        match store.eta_for(&pad("a", 5, PowerState::Charging)) {
+            Some(EtaHint::ChargeToFull(d)) => assert_eq!(d.as_secs(), 47 * 60 + 30),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(store.typical_charge("a").is_some());
+    }
+
+    #[test]
+    fn charge_half_bucket_alone_does_not_speculate() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                charge_steps: vec![StepSample {
+                    from_percent: 95,
+                    to_percent: 100,
+                    samples_ms: vec![5 * 60 * 1000],
+                }],
+                ..SerialRecord::default()
+            },
+        );
+        assert!(store.eta_for(&pad("a", 95, PowerState::Charging)).is_none());
+        assert!(store.typical_charge("a").is_none());
+    }
+
+    #[test]
+    fn charge_complete_commits_final_step() {
+        let mut store = AnalyticsStore::default();
+        let ninety_five = vec![pad("a", 95, PowerState::Charging)];
+        let complete = vec![pad("a", 100, PowerState::Complete)];
+        observe_enabled(&mut store, &[], &ninety_five, ms(1_000));
+        let t = accrue(&mut store, "a", 95, PowerState::Charging, ms(1_000), 5);
+        observe_enabled(
+            &mut store,
+            &ninety_five,
+            &complete,
+            t + Duration::from_secs(90),
+        );
+        assert!(store.in_progress("a").is_none());
+        let step = store.by_serial["a"]
+            .charge_steps
+            .iter()
+            .find(|s| s.from_percent == 95 && s.to_percent == 100)
+            .expect("95→100");
+        assert!(!step.samples_ms.is_empty());
+    }
+
+    #[test]
+    fn step_ring_keeps_three() {
+        let mut steps = Vec::new();
+        push_step_sample(&mut steps, 45, 35, 1);
+        push_step_sample(&mut steps, 45, 35, 2);
+        push_step_sample(&mut steps, 45, 35, 3);
+        push_step_sample(&mut steps, 45, 35, 4);
+        assert_eq!(steps[0].samples_ms, vec![2, 3, 4]);
+        assert_eq!(step_median(&steps, 45, 35), Some(3));
+    }
+
+    #[test]
+    fn format_duration_examples() {
+        assert_eq!(format_duration_short(Duration::from_secs(40 * 60)), "~40m");
+        assert_eq!(
+            format_duration_short(Duration::from_secs(2 * 3600 + 15 * 60)),
+            "~2h 15m"
+        );
+        assert_eq!(format_duration_short(Duration::from_secs(3600)), "~1h");
+    }
+
+    #[test]
+    fn format_eta_ring_is_compact() {
+        assert_eq!(
+            format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(8 * 3600))),
+            "~8h"
+        );
+        assert_eq!(
+            format_eta_ring(EtaHint::ChargeToFull(Duration::from_secs(40 * 60))),
+            "~40m"
+        );
     }
 
     #[test]
@@ -1077,7 +1218,6 @@ mod tests {
                 },
             );
         }
-        // One ancient pad.
         store.by_serial.insert(
             "ancient".into(),
             SerialRecord {
@@ -1095,59 +1235,8 @@ mod tests {
     #[test]
     fn disabled_observe_is_noop() {
         let mut store = AnalyticsStore::default();
-        let full = vec![pad("a", 100, PowerState::Complete)];
-        let unplugged = vec![pad("a", 100, PowerState::Discharging)];
-        store.observe(&full, &unplugged, false, |_| false, ms(1_000));
+        let mid = vec![pad("a", 45, PowerState::Discharging)];
+        store.observe(&[], &mid, false, |_| false, ms(1_000));
         assert!(store.by_serial.is_empty());
-    }
-
-    #[test]
-    fn format_duration_examples() {
-        assert_eq!(format_duration_short(Duration::from_secs(40 * 60)), "~40m");
-        assert_eq!(
-            format_duration_short(Duration::from_secs(2 * 3600 + 15 * 60)),
-            "~2h 15m"
-        );
-        assert_eq!(format_duration_short(Duration::from_secs(3600)), "~1h");
-    }
-
-    #[test]
-    fn format_eta_ring_is_compact() {
-        assert_eq!(
-            format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(8 * 3600))),
-            "est. 8h"
-        );
-        assert_eq!(
-            format_eta_ring(EtaHint::ChargeToFull(Duration::from_secs(40 * 60))),
-            "est. 40m"
-        );
-        assert_eq!(
-            format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(2 * 3600 + 15 * 60))),
-            "est. 2h"
-        );
-    }
-
-    #[test]
-    fn eta_scales_with_percent() {
-        let mut store = AnalyticsStore::default();
-        store.by_serial.insert(
-            "a".into(),
-            SerialRecord {
-                last_seen_ms: 1,
-                play_samples_ms: vec![10_000 * 1000], // 10_000s full drain
-                charge_samples_ms: vec![3_600 * 1000],
-                open: None,
-            },
-        );
-        let discharging = pad("a", 50, PowerState::Discharging);
-        match store.eta_for(&discharging) {
-            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 5_000),
-            other => panic!("unexpected {other:?}"),
-        }
-        let charging = pad("a", 75, PowerState::Charging);
-        match store.eta_for(&charging) {
-            Some(EtaHint::ChargeToFull(d)) => assert_eq!(d.as_secs(), 900),
-            other => panic!("unexpected {other:?}"),
-        }
     }
 }

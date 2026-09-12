@@ -20,7 +20,7 @@ const REF_TEXT_FULL: f32 = 16.0;
 const REF_ETA_TEXT: f32 = 12.0;
 
 /// Draws a circular outline filled clockwise to `percent`, with the value centered inside.
-/// When `eta` is set (e.g. `est. 8h`), it sits under the percent inside the ring.
+/// When `eta` is set (e.g. `~8h`), it sits under the percent inside the ring.
 pub fn percent_ring<'a, Message: 'a>(
     percent: u8,
     color: Color,

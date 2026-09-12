@@ -9,7 +9,7 @@ pub struct ToastMessage {
     pub body: String,
     pub accent: Rgb,
     pub percent: u8,
-    /// Compact estimate for the percent ring (`est. 8h`), when analytics has enough data.
+    /// Compact estimate for the percent ring (`~8h`), when analytics has enough data.
     pub eta: Option<String>,
 }
 

@@ -193,20 +193,10 @@ impl AnalyticsStore {
         record.drain_steps.clear();
         record.charge_steps.clear();
         for (from, to) in drain_edges() {
-            push_step_sample(
-                &mut record.drain_steps,
-                from,
-                to,
-                drain_step,
-            );
+            push_step_sample(&mut record.drain_steps, from, to, drain_step);
         }
         for (from, to) in charge_edges() {
-            push_step_sample(
-                &mut record.charge_steps,
-                from,
-                to,
-                charge_step,
-            );
+            push_step_sample(&mut record.charge_steps, from, to, charge_step);
         }
         record.in_progress = None;
         record.last_seen_ms = now_ms;
@@ -222,9 +212,7 @@ impl AnalyticsStore {
         let Some(progress) = record.in_progress.as_mut() else {
             return;
         };
-        progress.active_ms = progress
-            .active_ms
-            .saturating_add(extra.as_millis() as u64);
+        progress.active_ms = progress.active_ms.saturating_add(extra.as_millis() as u64);
         self.dirty = true;
     }
 
@@ -326,11 +314,11 @@ impl AnalyticsStore {
 
         // Mode flip or wrong-way percent: drop timer only.
         if let Some(ref p) = progress {
-            if p.direction != want {
-                self.clear_in_progress(serial, now_ms);
-            } else if want == BucketDirection::Drain && next.percent > p.percent {
-                self.clear_in_progress(serial, now_ms);
-            } else if want == BucketDirection::Charge && next.percent < p.percent {
+            let wrong_way = match want {
+                BucketDirection::Drain => next.percent > p.percent,
+                BucketDirection::Charge => next.percent < p.percent,
+            };
+            if p.direction != want || wrong_way {
                 self.clear_in_progress(serial, now_ms);
             }
         }
@@ -352,7 +340,12 @@ impl AnalyticsStore {
                             p.active_ms,
                             now_ms,
                         );
-                        self.start_in_progress(serial, BucketDirection::Drain, next.percent, now_ms);
+                        self.start_in_progress(
+                            serial,
+                            BucketDirection::Drain,
+                            next.percent,
+                            now_ms,
+                        );
                     } else if let Some(record) = self.by_serial.get_mut(serial) {
                         record.last_seen_ms = now_ms;
                     }
@@ -377,10 +370,10 @@ impl AnalyticsStore {
                             next.percent,
                             now_ms,
                         );
-                    } else if next.percent == p.percent {
-                        if let Some(record) = self.by_serial.get_mut(serial) {
-                            record.last_seen_ms = now_ms;
-                        }
+                    } else if next.percent == p.percent
+                        && let Some(record) = self.by_serial.get_mut(serial)
+                    {
+                        record.last_seen_ms = now_ms;
                     }
                 } else {
                     self.start_in_progress(serial, BucketDirection::Charge, next.percent, now_ms);
@@ -546,7 +539,9 @@ impl AnalyticsStore {
     }
 
     pub fn in_progress(&self, serial: &str) -> Option<&InProgressBucket> {
-        self.by_serial.get(serial).and_then(|r| r.in_progress.as_ref())
+        self.by_serial
+            .get(serial)
+            .and_then(|r| r.in_progress.as_ref())
     }
 
     pub fn panel_rows(&self) -> Vec<ControllerAnalytics> {
@@ -616,10 +611,7 @@ fn direction_matches(direction: BucketDirection, state: PowerState) -> bool {
 }
 
 fn drain_edges() -> Vec<(u8, u8)> {
-    DRAIN_LEVELS
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .collect()
+    DRAIN_LEVELS.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 fn charge_edges() -> Vec<(u8, u8)> {
@@ -654,12 +646,7 @@ fn charge_edges_from(current: u8) -> Option<Vec<(u8, u8)>> {
     if start + 1 >= levels.len() {
         return None;
     }
-    Some(
-        levels[start..]
-            .windows(2)
-            .map(|w| (w[0], w[1]))
-            .collect(),
-    )
+    Some(levels[start..].windows(2).map(|w| (w[0], w[1])).collect())
 }
 
 fn expand_drain(from: u8, to: u8) -> Vec<(u8, u8)> {
@@ -696,10 +683,7 @@ fn expand_charge(from: u8, to: u8) -> Vec<(u8, u8)> {
     if i1 <= i0 {
         return Vec::new();
     }
-    levels[i0..=i1]
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .collect()
+    levels[i0..=i1].windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 fn push_step_sample(steps: &mut Vec<StepSample>, from: u8, to: u8, duration_ms: u64) {
@@ -921,21 +905,16 @@ mod tests {
         let mut store = AnalyticsStore::default();
         let forty_five = vec![pad("a", 45, PowerState::Discharging)];
         observe_enabled(&mut store, &[], &forty_five, ms(1_000));
-        assert_eq!(
-            store.in_progress("a").map(|p| p.percent),
-            Some(45)
-        );
-        let t = accrue(
-            &mut store,
-            "a",
-            45,
-            PowerState::Discharging,
-            ms(1_000),
-            5,
-        );
+        assert_eq!(store.in_progress("a").map(|p| p.percent), Some(45));
+        let t = accrue(&mut store, "a", 45, PowerState::Discharging, ms(1_000), 5);
         assert!(store.by_serial["a"].drain_steps.is_empty());
         let thirty_five = vec![pad("a", 35, PowerState::Discharging)];
-        observe_enabled(&mut store, &forty_five, &thirty_five, t + Duration::from_secs(90));
+        observe_enabled(
+            &mut store,
+            &forty_five,
+            &thirty_five,
+            t + Duration::from_secs(90),
+        );
         let steps = &store.by_serial["a"].drain_steps;
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].from_percent, 45);
@@ -1015,7 +994,11 @@ mod tests {
                 ..SerialRecord::default()
             },
         );
-        assert!(store.eta_for(&pad("a", 100, PowerState::Discharging)).is_none());
+        assert!(
+            store
+                .eta_for(&pad("a", 100, PowerState::Discharging))
+                .is_none()
+        );
         assert!(store.typical_play("a").is_none());
     }
 
@@ -1061,14 +1044,7 @@ mod tests {
         // Overnight gap — no accrual.
         let day2 = t + Duration::from_secs(20 * 60 * 60);
         observe_enabled(&mut store, &[], &thirty_five, day2);
-        let t2 = accrue(
-            &mut store,
-            "a",
-            35,
-            PowerState::Discharging,
-            day2,
-            3,
-        );
+        let t2 = accrue(&mut store, "a", 35, PowerState::Discharging, day2, 3);
         let twenty_five = vec![pad("a", 25, PowerState::Discharging)];
         observe_enabled(
             &mut store,
@@ -1127,10 +1103,7 @@ mod tests {
             t + Duration::from_secs(180),
         );
         assert_eq!(store.by_serial["a"].charge_steps.len(), 1);
-        assert_eq!(
-            store.by_serial["a"].charge_steps[0].from_percent,
-            5
-        );
+        assert_eq!(store.by_serial["a"].charge_steps[0].from_percent, 5);
     }
 
     #[test]

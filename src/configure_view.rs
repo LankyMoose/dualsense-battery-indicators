@@ -709,11 +709,7 @@ impl canvas::Program<ConfigureMessage> for CoverageChart {
         for (i, step) in self.steps.iter().enumerate() {
             let x = pad + i as f32 * seg_w;
             let color = if step.typical_ms.is_some() {
-                if self.drain {
-                    filled
-                } else {
-                    charge_filled
-                }
+                if self.drain { filled } else { charge_filled }
             } else if step.speculative {
                 if self.drain {
                     speculative_drain

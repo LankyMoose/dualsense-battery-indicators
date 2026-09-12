@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-13
+
 ### Changed
 
 - Remaining-time estimates interpolate within the current DualSense percent bucket using accrued drain/charge time (clamped so ETA never drops below the next breakpoint).
 - Remaining-time labels (tray/toast rings and Settings full charge/drain totals) always floor to duration tiers: 30-minute steps at ≥4h, 15-minute at ≥2h, 5-minute below 2h (e.g. `~3h 30m`).
 - Controller popup and overlay toast rings are larger so longer ETA labels fit.
 - Low-battery threshold is DualSense mid-points 5–35% (was 5–50% in 5% steps); non-observable values in saved prefs snap down to the next mid-point. The threshold slider is shown only when low-battery notifications are enabled.
+- Lightbar hue picker is a rainbow spectrum strip instead of a plain slider.
 
 ## [1.1.0] - 2026-09-12
 
@@ -202,6 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.2.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.15...v1.0.0

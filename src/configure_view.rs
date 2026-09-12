@@ -34,6 +34,7 @@ const CONTENT_WIDTH: f32 = WIDTH - SIDEBAR_WIDTH - CONTENT_PADDING * 3.0;
 
 const BAR_HEIGHT: f32 = 44.0;
 const SV_HEIGHT: f32 = 112.0;
+const HUE_HEIGHT: f32 = 20.0;
 const COVERAGE_HEIGHT: f32 = 56.0;
 const HANDLE_WIDTH: f32 = 10.0;
 const HIT_RADIUS: f32 = 12.0;
@@ -840,7 +841,9 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
     .width(Fill)
     .height(Length::Fixed(SV_HEIGHT));
 
-    let hue = slider(0.0..=360.0, state.hue, ConfigureMessage::HueChanged).step(1.0_f32);
+    let hue = canvas_widget(HueBar { hue: state.hue })
+        .width(Fill)
+        .height(Length::Fixed(HUE_HEIGHT));
 
     let reset = button(text("Reset defaults").size(12.0).center().width(Fill))
         .padding([6, 4])
@@ -852,7 +855,7 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
         container(bar).width(Fill).style(theme::well),
         stops,
         container(sv).width(Fill).style(theme::well),
-        hue,
+        container(hue).width(Fill).style(theme::well),
         reset,
     ]
     .spacing(8)
@@ -1097,6 +1100,115 @@ impl canvas::Program<ConfigureMessage> for SpectrumBar {
                 mouse::Interaction::Crosshair
             }
             _ => mouse::Interaction::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hue spectrum bar
+// ---------------------------------------------------------------------------
+
+struct HueBar {
+    hue: f32,
+}
+
+#[derive(Debug, Default)]
+struct HueState {
+    dragging: bool,
+}
+
+impl HueBar {
+    fn sample(bounds: Rectangle, cursor: mouse::Cursor) -> Option<f32> {
+        let point = cursor.position()?;
+        let t = ((point.x - bounds.x) / bounds.width.max(1.0)).clamp(0.0, 1.0);
+        Some(t * 360.0)
+    }
+}
+
+impl canvas::Program<ConfigureMessage> for HueBar {
+    type State = HueState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<ConfigureMessage>> {
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(bounds) =>
+            {
+                state.dragging = true;
+                let hue = Self::sample(bounds, cursor)?;
+                Some(canvas::Action::publish(ConfigureMessage::HueChanged(hue)).and_capture())
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
+                let hue = Self::sample(bounds, cursor)?;
+                Some(canvas::Action::publish(ConfigureMessage::HueChanged(hue)).and_capture())
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.dragging => {
+                state.dragging = false;
+                Some(canvas::Action::request_redraw().and_capture())
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let size = bounds.size();
+
+        let mut spectrum =
+            canvas::gradient::Linear::new(Point::new(0.0, 0.0), Point::new(size.width, 0.0));
+        for (index, hue) in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 360.0]
+            .into_iter()
+            .enumerate()
+        {
+            spectrum = spectrum.add_stop(
+                index as f32 / 6.0,
+                theme::from_rgb(hsv_to_rgb(hue, 1.0, 1.0)),
+            );
+        }
+        frame.fill_rectangle(Point::ORIGIN, size, spectrum);
+
+        let x = (self.hue.rem_euclid(360.0) / 360.0).clamp(0.0, 1.0) * size.width;
+        let cursor_point = Point::new(x, size.height / 2.0);
+        frame.stroke(
+            &Path::circle(cursor_point, 6.0),
+            canvas::Stroke::default()
+                .with_color(Color::WHITE)
+                .with_width(2.0),
+        );
+        frame.stroke(
+            &Path::circle(cursor_point, 7.5),
+            canvas::Stroke::default()
+                .with_color(theme::alpha(Color::BLACK, 0.6))
+                .with_width(1.0),
+        );
+
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.dragging {
+            mouse::Interaction::Grabbing
+        } else if cursor.is_over(bounds) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
         }
     }
 }

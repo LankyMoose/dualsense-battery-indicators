@@ -3,7 +3,9 @@
 //! Learns per DualSense bucket edge (last-3 durations). Interruptions clear only
 //! the in-progress bucket timer — committed steps survive. Remaining-time ETA
 //! can speculate from a single qualifying step (half-bucket 100↔95 excluded as
-//! a rate source). Nothing leaves the machine.
+//! a rate source), and interpolates within the current bucket using accrued
+//! active time. Display labels floor to duration-tier breakpoints. Nothing
+//! leaves the machine.
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
@@ -98,7 +100,7 @@ pub struct ControllerAnalytics {
     pub charge_coverage: Vec<StepCoverage>,
 }
 
-/// Remaining-time hint for the tray popup meta line.
+/// Remaining-time hint for tray/toast rings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EtaHint {
     PlayLeft(Duration),
@@ -582,6 +584,14 @@ impl AnalyticsStore {
         let record = self.by_serial.get(serial)?;
         let edges = drain_edges_from(percent)?;
         let ms = speculative_chain_ms(&record.drain_steps, &edges)?;
+        let ms = interpolate_remaining_ms(
+            ms,
+            &edges,
+            &record.drain_steps,
+            record.in_progress.as_ref(),
+            BucketDirection::Drain,
+            percent,
+        );
         let left = Duration::from_millis(ms);
         if left.is_zero() {
             None
@@ -594,6 +604,14 @@ impl AnalyticsStore {
         let record = self.by_serial.get(serial)?;
         let edges = charge_edges_from(percent)?;
         let ms = speculative_chain_ms(&record.charge_steps, &edges)?;
+        let ms = interpolate_remaining_ms(
+            ms,
+            &edges,
+            &record.charge_steps,
+            record.in_progress.as_ref(),
+            BucketDirection::Charge,
+            percent,
+        );
         let left = Duration::from_millis(ms);
         if left.is_zero() {
             None
@@ -750,6 +768,48 @@ fn speculative_chain_ms(steps: &[StepSample], edges: &[(u8, u8)]) -> Option<u64>
     Some(total)
 }
 
+/// Expected duration of one edge (measured median, else rate × Δ%).
+fn edge_duration_ms(steps: &[StepSample], from: u8, to: u8) -> Option<u64> {
+    let delta = u64::from(from.abs_diff(to));
+    if delta == 0 {
+        return None;
+    }
+    if let Some(med) = step_median(steps, from, to) {
+        return Some(med);
+    }
+    let rate = default_rate_ms_per_percent(steps)?;
+    Some(rate.saturating_mul(delta))
+}
+
+/// Subtract elapsed time in the current bucket from a full remaining-path sum.
+/// Clamps so remaining never drops below the path from the next breakpoint.
+fn interpolate_remaining_ms(
+    chain_ms: u64,
+    edges: &[(u8, u8)],
+    steps: &[StepSample],
+    in_progress: Option<&InProgressBucket>,
+    expected_direction: BucketDirection,
+    percent: u8,
+) -> u64 {
+    let Some(progress) = in_progress else {
+        return chain_ms;
+    };
+    if progress.direction != expected_direction || progress.percent != percent {
+        return chain_ms;
+    }
+    let Some(&(from, to)) = edges.first() else {
+        return chain_ms;
+    };
+    if from != percent {
+        return chain_ms;
+    }
+    let Some(edge_ms) = edge_duration_ms(steps, from, to) else {
+        return chain_ms;
+    };
+    let elapsed = progress.active_ms.min(edge_ms);
+    chain_ms.saturating_sub(elapsed)
+}
+
 fn coverage_list(steps: &[StepSample], edges: &[(u8, u8)]) -> Vec<StepCoverage> {
     let can_speculate = default_rate_ms_per_percent(steps).is_some();
     edges
@@ -766,14 +826,25 @@ fn coverage_list(steps: &[StepSample], edges: &[(u8, u8)]) -> Vec<StepCoverage> 
         .collect()
 }
 
-/// Format a duration for UI: `~2h 15m`, `~40m`, `~1h`.
-pub fn format_duration_short(duration: Duration) -> String {
-    let total_mins = duration.as_secs() / 60;
-    if total_mins < 1 {
-        return "~<1m".to_string();
+/// Floor minutes to the display tier for the unrounded duration.
+/// ≥4h → 30m, ≥2h → 15m, else 5m. Always rounds down.
+fn floor_display_mins(total_mins: u64) -> u64 {
+    let step = if total_mins >= 4 * 60 {
+        30
+    } else if total_mins >= 2 * 60 {
+        15
+    } else {
+        5
+    };
+    (total_mins / step) * step
+}
+
+fn format_floored_mins(floored_mins: u64) -> String {
+    if floored_mins == 0 {
+        return "~<5m".to_string();
     }
-    let hours = total_mins / 60;
-    let mins = total_mins % 60;
+    let hours = floored_mins / 60;
+    let mins = floored_mins % 60;
     if hours == 0 {
         format!("~{mins}m")
     } else if mins == 0 {
@@ -783,18 +854,18 @@ pub fn format_duration_short(duration: Duration) -> String {
     }
 }
 
-/// Compact ring label: `~8h`, `~40m`.
+/// Format a duration for UI, floored to tier breakpoints: `~2h 15m`, `~40m`, `~1h`.
+pub fn format_duration_short(duration: Duration) -> String {
+    let total_mins = duration.as_secs() / 60;
+    format_floored_mins(floor_display_mins(total_mins))
+}
+
+/// Ring label using the same floored breakpoints as Settings.
 pub fn format_eta_ring(hint: EtaHint) -> String {
     let duration = match hint {
         EtaHint::PlayLeft(d) | EtaHint::ChargeToFull(d) => d,
     };
-    let total_mins = duration.as_secs().div_ceil(60).max(1);
-    if total_mins < 60 {
-        format!("~{total_mins}m")
-    } else {
-        let hours = total_mins / 60;
-        format!("~{hours}h")
-    }
+    format_duration_short(duration)
 }
 
 fn median_ms(samples: &[u64]) -> Option<u64> {
@@ -1182,17 +1253,32 @@ mod tests {
     }
 
     #[test]
-    fn format_duration_examples() {
+    fn format_duration_floors_to_tier() {
         assert_eq!(format_duration_short(Duration::from_secs(40 * 60)), "~40m");
         assert_eq!(
             format_duration_short(Duration::from_secs(2 * 3600 + 15 * 60)),
             "~2h 15m"
         );
         assert_eq!(format_duration_short(Duration::from_secs(3600)), "~1h");
+        assert_eq!(
+            format_duration_short(Duration::from_secs(4 * 3600 + 29 * 60)),
+            "~4h"
+        );
+        assert_eq!(
+            format_duration_short(Duration::from_secs(3 * 3600 + 59 * 60)),
+            "~3h 45m"
+        );
+        assert_eq!(
+            format_duration_short(Duration::from_secs(3600 + 59 * 60)),
+            "~1h 55m"
+        );
+        assert_eq!(format_duration_short(Duration::from_secs(4 * 60)), "~<5m");
+        assert_eq!(format_duration_short(Duration::from_secs(8 * 3600)), "~8h");
+        assert_eq!(format_duration_short(Duration::from_secs(2 * 3600)), "~2h");
     }
 
     #[test]
-    fn format_eta_ring_is_compact() {
+    fn format_eta_ring_uses_same_floored_label() {
         assert_eq!(
             format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(8 * 3600))),
             "~8h"
@@ -1201,6 +1287,187 @@ mod tests {
             format_eta_ring(EtaHint::ChargeToFull(Duration::from_secs(40 * 60))),
             "~40m"
         );
+        assert_eq!(
+            format_eta_ring(EtaHint::PlayLeft(Duration::from_secs(3 * 3600 + 30 * 60))),
+            "~3h 30m"
+        );
+    }
+
+    #[test]
+    fn drain_interpolates_within_current_bucket() {
+        // 35→25 = 1h, 25→15 = 1h, 15→5 = 1h → at 35%: 3h path; at 25%: 2h.
+        // Plan example scaled: 35% = 4h / 25% = 3h needs a longer remaining tail;
+        // use 35→25 = 1h and remaining 25→5 = 3h so entry is 4h.
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![
+                    StepSample {
+                        from_percent: 35,
+                        to_percent: 25,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 25,
+                        to_percent: 15,
+                        samples_ms: vec![90 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 15,
+                        to_percent: 5,
+                        samples_ms: vec![90 * 60 * 1000],
+                    },
+                ],
+                in_progress: Some(InProgressBucket {
+                    direction: BucketDirection::Drain,
+                    percent: 35,
+                    active_ms: 0,
+                }),
+                ..SerialRecord::default()
+            },
+        );
+        match store.eta_for(&pad("a", 35, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 4 * 3600),
+            other => panic!("expected 4h at entry, got {other:?}"),
+        }
+        store.by_serial.get_mut("a").unwrap().in_progress = Some(InProgressBucket {
+            direction: BucketDirection::Drain,
+            percent: 35,
+            active_ms: 30 * 60 * 1000, // half of 35→25
+        });
+        match store.eta_for(&pad("a", 35, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 3 * 3600 + 30 * 60),
+            other => panic!("expected 3h 30m, got {other:?}"),
+        }
+        store.by_serial.get_mut("a").unwrap().in_progress = Some(InProgressBucket {
+            direction: BucketDirection::Drain,
+            percent: 35,
+            active_ms: 45 * 60 * 1000, // three-quarters
+        });
+        match store.eta_for(&pad("a", 35, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 3 * 3600 + 15 * 60),
+            other => panic!("expected 3h 15m, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_interpolation_clamps_to_next_breakpoint() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![
+                    StepSample {
+                        from_percent: 35,
+                        to_percent: 25,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 25,
+                        to_percent: 15,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 15,
+                        to_percent: 5,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                ],
+                in_progress: Some(InProgressBucket {
+                    direction: BucketDirection::Drain,
+                    percent: 35,
+                    active_ms: 3 * 60 * 60 * 1000, // past the edge
+                }),
+                ..SerialRecord::default()
+            },
+        );
+        match store.eta_for(&pad("a", 35, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 2 * 3600),
+            other => panic!("expected clamp to 25% path (2h), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_wrong_in_progress_does_not_interpolate() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                drain_steps: vec![
+                    StepSample {
+                        from_percent: 35,
+                        to_percent: 25,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 25,
+                        to_percent: 15,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 15,
+                        to_percent: 5,
+                        samples_ms: vec![60 * 60 * 1000],
+                    },
+                ],
+                in_progress: Some(InProgressBucket {
+                    direction: BucketDirection::Charge,
+                    percent: 35,
+                    active_ms: 30 * 60 * 1000,
+                }),
+                ..SerialRecord::default()
+            },
+        );
+        match store.eta_for(&pad("a", 35, PowerState::Discharging)) {
+            Some(EtaHint::PlayLeft(d)) => assert_eq!(d.as_secs(), 3 * 3600),
+            other => panic!("expected full path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn charge_interpolates_within_current_bucket() {
+        let mut store = AnalyticsStore::default();
+        store.by_serial.insert(
+            "a".into(),
+            SerialRecord {
+                last_seen_ms: 1,
+                charge_steps: vec![
+                    StepSample {
+                        from_percent: 5,
+                        to_percent: 15,
+                        samples_ms: vec![20 * 60 * 1000],
+                    },
+                    StepSample {
+                        from_percent: 15,
+                        to_percent: 25,
+                        samples_ms: vec![20 * 60 * 1000],
+                    },
+                ],
+                in_progress: Some(InProgressBucket {
+                    direction: BucketDirection::Charge,
+                    percent: 5,
+                    active_ms: 10 * 60 * 1000, // half of 5→15
+                }),
+                ..SerialRecord::default()
+            },
+        );
+        // Remaining path from 5%: need full chain to 100 for eta_charge — seed rate via steps.
+        // With only two steps, speculative fills the rest from rate (20min/10% = 2 min/%).
+        // Full 5→100 = 95% → 190 min; minus 10 min elapsed → 180 min.
+        match store.eta_for(&pad("a", 5, PowerState::Charging)) {
+            Some(EtaHint::ChargeToFull(d)) => assert_eq!(d.as_secs(), 180 * 60),
+            other => panic!("unexpected {other:?}"),
+        }
+        // No matching in_progress → full path.
+        store.by_serial.get_mut("a").unwrap().in_progress = None;
+        match store.eta_for(&pad("a", 5, PowerState::Charging)) {
+            Some(EtaHint::ChargeToFull(d)) => assert_eq!(d.as_secs(), 190 * 60),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

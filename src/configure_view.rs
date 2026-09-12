@@ -520,22 +520,7 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
             .on_toggle(move |enabled| ConfigureMessage::SetNotification(setting, enabled))
     };
 
-    let threshold = settings.low_battery_percent;
-    let low_slider = column![
-        text(format!("At or below {threshold}%"))
-            .size(12.0)
-            .color(theme::MUTED),
-        slider(
-            f32::from(LOW_BATTERY_PERCENT_MIN)..=f32::from(LOW_BATTERY_PERCENT_MAX),
-            f32::from(threshold),
-            |value| ConfigureMessage::SetLowBatteryPercent(value.round() as u8),
-        )
-        .step(5.0_f32),
-    ]
-    .spacing(4)
-    .width(Fill);
-
-    column![
+    let mut items = column![
         toggle(
             "Connected",
             settings.notify_connect,
@@ -547,16 +532,36 @@ fn notifications_view<'a>(settings: &ConfigureSettings) -> Element<'a, Configure
             NotificationSetting::Disconnect
         ),
         toggle("Low battery", settings.notify_low, NotificationSetting::Low),
-        low_slider,
-        toggle(
-            "Finished charging",
-            settings.notify_charged,
-            NotificationSetting::Charged
-        ),
     ]
     .spacing(8)
-    .width(Fill)
-    .into()
+    .width(Fill);
+
+    if settings.notify_low {
+        let threshold = settings.low_battery_percent;
+        items = items.push(
+            column![
+                text(format!("At or below {threshold}%"))
+                    .size(12.0)
+                    .color(theme::MUTED),
+                slider(
+                    f32::from(LOW_BATTERY_PERCENT_MIN)..=f32::from(LOW_BATTERY_PERCENT_MAX),
+                    f32::from(threshold),
+                    |value| ConfigureMessage::SetLowBatteryPercent(value.round() as u8),
+                )
+                .step(10.0_f32),
+            ]
+            .spacing(4)
+            .width(Fill),
+        );
+    }
+
+    items = items.push(toggle(
+        "Finished charging",
+        settings.notify_charged,
+        NotificationSetting::Charged,
+    ));
+
+    items.into()
 }
 
 fn analytics_view<'a>(

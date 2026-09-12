@@ -10,7 +10,10 @@ use std::path::PathBuf;
 
 /// Inclusive bounds for the low-battery threshold slider (DualSense mid-points).
 pub const LOW_BATTERY_PERCENT_MIN: u8 = 5;
-pub const LOW_BATTERY_PERCENT_MAX: u8 = 50;
+pub const LOW_BATTERY_PERCENT_MAX: u8 = 35;
+
+/// DualSense-observable mid-points within the low-battery threshold range.
+const LOW_BATTERY_OBSERVABLE: [u8; 4] = [5, 15, 25, 35];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,7 +57,15 @@ fn default_low_battery_percent() -> u8 {
 }
 
 pub fn clamp_low_battery_percent(value: u8) -> u8 {
-    value.clamp(LOW_BATTERY_PERCENT_MIN, LOW_BATTERY_PERCENT_MAX)
+    let clamped = value.clamp(LOW_BATTERY_PERCENT_MIN, LOW_BATTERY_PERCENT_MAX);
+    // Floor to the greatest observable mid-point ≤ clamped (preserves fire points
+    // for legacy prefs like 10/20/30/40 that DualSense never reports).
+    LOW_BATTERY_OBSERVABLE
+        .iter()
+        .copied()
+        .rev()
+        .find(|&p| p <= clamped)
+        .unwrap_or(LOW_BATTERY_PERCENT_MIN)
 }
 
 impl Default for Prefs {
@@ -176,7 +187,12 @@ mod tests {
     fn clamp_low_battery_percent_bounds() {
         assert_eq!(clamp_low_battery_percent(0), LOW_BATTERY_PERCENT_MIN);
         assert_eq!(clamp_low_battery_percent(5), 5);
+        assert_eq!(clamp_low_battery_percent(10), 5);
+        assert_eq!(clamp_low_battery_percent(15), 15);
+        assert_eq!(clamp_low_battery_percent(20), 15);
         assert_eq!(clamp_low_battery_percent(25), 25);
+        assert_eq!(clamp_low_battery_percent(35), 35);
+        assert_eq!(clamp_low_battery_percent(45), LOW_BATTERY_PERCENT_MAX);
         assert_eq!(clamp_low_battery_percent(50), LOW_BATTERY_PERCENT_MAX);
         assert_eq!(clamp_low_battery_percent(99), LOW_BATTERY_PERCENT_MAX);
     }

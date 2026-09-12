@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-12
+
+### Changed
+
+- Battery analytics records per DualSense bucket-step windows instead of abortable charge/play sessions; mid-cycle interruptions clear only the in-progress timer.
+- Remaining-time estimates unlock after one qualifying step (missing edges filled from median ms/%; the 100↔95 edge is excluded as a rate source).
+- Settings labels use “Full charge …” / “Full drain …” for cycle totals; tray rings show compact `~7h` / `~30m`, including for remembered disconnected pads.
+
+### Fixed
+
+- Analytics Settings panel scrollbar no longer overlays content.
+
 ## [1.0.1] - 2026-09-12
 
 ### Fixed
@@ -183,6 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.1.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.15...v1.0.0
 [0.1.15]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v0.1.14...v0.1.15

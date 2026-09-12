@@ -74,7 +74,7 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 - Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
 - Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/threshold/position + lightbar spectrum + analytics opt-in)
 - Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json` (remembered pads + nicknames)
-- Battery analytics (when enabled): `%APPDATA%\dualsense-battery-indicators\analytics.json` (per-pad duration samples + in-progress session)
+- Battery analytics (when enabled): `%APPDATA%\dualsense-battery-indicators\analytics.json` (per-pad step samples + in-progress timer)
 - Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
 - Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
 - The left-click controller popup is available on Windows and macOS. The `tray-icon` Linux backend does not emit tray click events; use the right-click **Settings** menu there.
@@ -121,8 +121,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary:
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).

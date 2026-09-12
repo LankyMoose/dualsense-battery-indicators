@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Remaining-time estimates interpolate within the current DualSense percent bucket using accrued drain/charge time (clamped so ETA never drops below the next breakpoint).
+- Remaining-time labels (tray/toast rings and Settings full charge/drain totals) always floor to duration tiers: 30-minute steps at ≥4h, 15-minute at ≥2h, 5-minute below 2h (e.g. `~3h 30m`).
+- Controller popup and overlay toast rings are larger so longer ETA labels fit.
 - Low-battery threshold is DualSense mid-points 5–35% (was 5–50% in 5% steps); non-observable values in saved prefs snap down to the next mid-point. The threshold slider is shown only when low-battery notifications are enabled.
 
 ## [1.1.0] - 2026-09-12

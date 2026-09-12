@@ -12,12 +12,12 @@ use iced::widget::{
 use iced::{Alignment, Color, Element, Fill, Length, Shrink};
 
 /// Logical width of the popup window.
-pub const WIDTH: f32 = 360.0;
+pub const WIDTH: f32 = 380.0;
 /// Maximum number of rows shown before the list scrolls.
 pub const MAX_VISIBLE_ROWS: usize = 6;
 
 const HEADER_HEIGHT: f32 = 38.0;
-const ROW_HEIGHT: f32 = 72.0;
+const ROW_HEIGHT: f32 = 88.0;
 const ROW_SPACING: f32 = 6.0;
 const PADDING: f32 = 10.0;
 const EMPTY_HEIGHT: f32 = 56.0;
@@ -42,7 +42,7 @@ pub struct ControllerRow {
     pub remembered: bool,
     pub remember_enabled: bool,
     pub low: bool,
-    /// Optional remaining-time hint from battery analytics (`~2h 15m left`).
+    /// Optional remaining-time hint from battery analytics (`~3h 30m`).
     pub eta: Option<String>,
 }
 

@@ -7,9 +7,9 @@ use iced::widget::{column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element, Fill, Length, Shrink};
 
 /// Logical width of the toast window.
-pub const WIDTH: f32 = 340.0;
+pub const WIDTH: f32 = 360.0;
 /// Logical height of the toast window.
-pub const HEIGHT: f32 = 84.0;
+pub const HEIGHT: f32 = 100.0;
 /// Gap kept between the toast and the screen edge.
 pub const MARGIN: f32 = 16.0;
 

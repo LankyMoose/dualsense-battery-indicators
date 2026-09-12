@@ -9,7 +9,7 @@ pub struct ToastMessage {
     pub body: String,
     pub accent: Rgb,
     pub percent: u8,
-    /// Compact estimate for the percent ring (`~8h`), when analytics has enough data.
+    /// Floored estimate for the percent ring (`~3h 30m`), when analytics has enough data.
     pub eta: Option<String>,
 }
 
@@ -36,7 +36,7 @@ impl ToastMessage {
             body: "Toasts will appear here".to_string(),
             accent: spectrum.color_at_percent(PERCENT),
             percent: PERCENT,
-            eta: None,
+            eta: Some("~3h 30m".to_string()),
         }
     }
 }
@@ -83,5 +83,6 @@ mod tests {
         assert_eq!(message.accent, spectrum.color_at_percent(70));
         assert!(!message.heading.is_empty());
         assert!(!message.body.is_empty());
+        assert_eq!(message.eta.as_deref(), Some("~3h 30m"));
     }
 }

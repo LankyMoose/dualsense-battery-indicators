@@ -9,18 +9,18 @@ use iced::{
 };
 
 /// Reference size used by overlay toasts; stroke and type scale from this.
-pub const TOAST_SIZE: f32 = 60.0;
+pub const TOAST_SIZE: f32 = 76.0;
 /// Size that fits a controller-popup row.
-pub const POPUP_SIZE: f32 = 56.0;
+pub const POPUP_SIZE: f32 = 72.0;
 
 const REF_SIZE: f32 = 60.0;
 const REF_STROKE: f32 = 3.5;
 const REF_TEXT: f32 = 20.0;
 const REF_TEXT_FULL: f32 = 16.0;
-const REF_ETA_TEXT: f32 = 12.0;
+const REF_ETA_TEXT: f32 = 10.5;
 
 /// Draws a circular outline filled clockwise to `percent`, with the value centered inside.
-/// When `eta` is set (e.g. `~8h`), it sits under the percent inside the ring.
+/// When `eta` is set (e.g. `~3h 30m`), it sits under the percent inside the ring.
 pub fn percent_ring<'a, Message: 'a>(
     percent: u8,
     color: Color,
@@ -57,6 +57,7 @@ impl PercentRing {
         } else {
             REF_TEXT
         };
+        // Leave room for a second line like `~3h 30m`.
         let scale = if self.eta.is_some() { 0.82 } else { 1.0 };
         base * (self.size / REF_SIZE) * scale
     }
@@ -117,10 +118,13 @@ impl<Message> canvas::Program<Message> for PercentRing {
 
         let percent_size = self.text_size(percent);
         let (percent_pos, eta_pos) = if self.eta.is_some() {
-            let gap = percent_size * 0.75;
+            let eta_size = self.eta_text_size();
+            // Half-heights plus a small gap; keep the pair's midpoint on center.
+            let gap = eta_size * 0.38;
+            let pair_span = percent_size * 0.42 + eta_size * 0.42 + gap;
             (
-                Point::new(center.x, center.y - gap * 0.42),
-                Some(Point::new(center.x, center.y + gap * 0.92)),
+                Point::new(center.x, center.y - pair_span * 0.5),
+                Some(Point::new(center.x, center.y + pair_span * 0.5)),
             )
         } else {
             (center, None)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Controller popup and Settings are ephemeral again (create/destroy on each open). The overlay toast window is pre-created hidden at boot and kept as a GPU compositor sentinel so reopen stays fast without holding full UI surfaces idle.
+
 ## [1.2.0] - 2026-09-13
 
 ### Changed

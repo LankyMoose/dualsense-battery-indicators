@@ -1,7 +1,9 @@
 //! iced `daemon` shell for the DualSense battery tray app.
 //!
 //! The daemon boots windowless: it owns the tray icon and only opens windows on
-//! demand (controller popup, configure window, overlay toast).
+//! demand (controller popup, configure window, overlay toast). The toast window
+//! is pre-created hidden after the tray appears so iced keeps a warm GPU
+//! compositor; popup and Settings stay ephemeral (create/destroy on each open).
 
 use crate::analytics::{self, AnalyticsStore};
 use crate::app_log;
@@ -94,7 +96,6 @@ pub enum Message {
         id: window::Id,
         scale: f32,
         monitor: Option<Size>,
-        size: Size,
     },
     Popup(PopupMessage),
 
@@ -135,6 +136,10 @@ pub struct App {
     tray_anchor: TrayAnchor,
 
     popup_window: Option<window::Id>,
+    /// Cached scale / monitor from the last popup place (skips iced queries on reopen).
+    popup_scale: f32,
+    popup_monitor: Option<Size>,
+    popup_metrics_cached: bool,
     popup_state: popup_view::State,
     popup_rows: Vec<ControllerRow>,
 
@@ -226,6 +231,9 @@ impl App {
             tray_icon: None,
             tray_anchor: TrayAnchor::default(),
             popup_window: None,
+            popup_scale: 1.0,
+            popup_monitor: None,
+            popup_metrics_cached: false,
             popup_state: popup_view::State::default(),
             popup_rows: Vec::new(),
             configure_window: None,
@@ -247,13 +255,14 @@ impl App {
         };
 
         // Show the tray immediately, then poll in the background so a stuck HID
-        // read cannot delay the icon for tens of seconds.
+        // read cannot delay the icon for tens of seconds. Pre-create the toast
+        // window hidden so iced keeps a warm GPU compositor for fast popup/Settings opens.
         app.create_tray();
         app.sync_popup_rows();
         app.sync_low_battery();
         app.refresh_analytics_panel();
 
-        let task = app.request_refresh();
+        let task = Task::batch([app.request_refresh(), app.ensure_toast_window()]);
         (app, task)
     }
 
@@ -322,7 +331,7 @@ impl App {
             };
         }
 
-        container(space()).into()
+        container(space()).style(theme::root).into()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -344,12 +353,17 @@ impl App {
                 if Some(id) == self.popup_window {
                     self.popup_window = None;
                     self.popup_state.cancel();
+                    Task::none()
                 } else if Some(id) == self.configure_window {
                     self.configure_window = None;
+                    Task::none()
                 } else if Some(id) == self.toast_window {
                     self.toast_window = None;
+                    // Recreate so iced keeps a warm compositor for popup/Settings.
+                    self.ensure_toast_window()
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::WindowUnfocused(id) => {
                 // The popup is a transient tray flyout: dismiss it when focus moves away.
@@ -360,17 +374,18 @@ impl App {
                 }
             }
 
-            Message::PopupOpened(id) => place_popup(id),
-            Message::PlacePopup {
-                id,
-                scale,
-                monitor,
-                size,
-            } => {
-                let position = popup_position(self.tray_anchor, scale, monitor, size);
-                window::move_to(id, position)
-                    .chain(window::set_mode(id, window::Mode::Windowed))
-                    .chain(window::gain_focus(id))
+            Message::PopupOpened(id) => {
+                if self.popup_metrics_cached {
+                    self.reveal_popup(id)
+                } else {
+                    place_popup(id)
+                }
+            }
+            Message::PlacePopup { id, scale, monitor } => {
+                self.popup_scale = if scale > 0.0 { scale } else { 1.0 };
+                self.popup_monitor = monitor;
+                self.popup_metrics_cached = true;
+                self.reveal_popup(id)
             }
             Message::Popup(message) => self.on_popup_message(message),
 
@@ -654,10 +669,22 @@ impl App {
         open.map(Message::PopupOpened)
     }
 
+    fn reveal_popup(&self, id: window::Id) -> Task<Message> {
+        let height = popup_view::window_height(self.popup_rows.len());
+        let size = Size::new(popup_view::WIDTH, height);
+        let position = popup_position(self.tray_anchor, self.popup_scale, self.popup_monitor, size);
+        window::move_to(id, position)
+            .chain(window::set_mode(id, window::Mode::Windowed))
+            .chain(window::gain_focus(id))
+    }
+
     fn close_popup(&mut self) -> Task<Message> {
         self.popup_state.cancel();
-        match self.popup_window.take() {
-            Some(id) => window::close(id),
+        // Hide first (same as Settings) so iced's surface teardown cannot paint a
+        // brief empty root-colored frame while the HWND is still visible.
+        // Keep `popup_window` until WindowClosed.
+        match self.popup_window {
+            Some(id) => window::set_mode(id, window::Mode::Hidden).chain(window::close(id)),
             None => Task::none(),
         }
     }
@@ -795,8 +822,10 @@ impl App {
 
     fn on_configure_message(&mut self, message: ConfigureMessage) -> Task<Message> {
         match message {
-            ConfigureMessage::Close => match self.configure_window.take() {
-                Some(id) => window::close(id),
+            // Hide first so DWM cannot flash the default (white) brush while the
+            // wgpu surface is torn down; keep id until WindowClosed.
+            ConfigureMessage::Close => match self.configure_window {
+                Some(id) => window::set_mode(id, window::Mode::Hidden).chain(window::close(id)),
                 None => Task::none(),
             },
             ConfigureMessage::DragWindow => match self.configure_window {
@@ -1136,6 +1165,33 @@ impl App {
         finish.chain(self.show_next_toast())
     }
 
+    /// Pre-create the toast window hidden so iced keeps a warm GPU compositor.
+    /// Also used as the first-toast path; does not show or queue a message.
+    fn ensure_toast_window(&mut self) -> Task<Message> {
+        if self.toast_window.is_some() {
+            return Task::none();
+        }
+        let (_id, open) = self.create_toast_window();
+        open.discard()
+    }
+
+    fn create_toast_window(&mut self) -> (window::Id, Task<window::Id>) {
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(toast_view::WIDTH, toast_view::HEIGHT),
+            position: window::Position::Default,
+            visible: false,
+            resizable: false,
+            decorations: false,
+            transparent: true,
+            level: window::Level::AlwaysOnTop,
+            exit_on_close_request: false,
+            platform_specific: overlay_platform_specific(),
+            ..window::Settings::default()
+        });
+        self.toast_window = Some(id);
+        (id, open)
+    }
+
     fn show_next_toast(&mut self) -> Task<Message> {
         if self.toast_message.is_some() {
             return Task::none();
@@ -1156,20 +1212,7 @@ impl App {
             return place_toast(id).chain(expire);
         }
 
-        let (id, open) = window::open(window::Settings {
-            size: Size::new(toast_view::WIDTH, toast_view::HEIGHT),
-            position: window::Position::Default,
-            visible: false,
-            resizable: false,
-            decorations: false,
-            transparent: true,
-            level: window::Level::AlwaysOnTop,
-            exit_on_close_request: false,
-            platform_specific: overlay_platform_specific(),
-            ..window::Settings::default()
-        });
-
-        self.toast_window = Some(id);
+        let (_id, open) = self.create_toast_window();
         open.then(place_toast).chain(expire)
     }
 
@@ -1212,8 +1255,8 @@ impl App {
         self.toast_placement = None;
         self.toast_dismissing = false;
 
-        // Keep the window alive but hidden: recreating a GPU surface for every
-        // toast would cost more than the memory it saves.
+        // Keep the window alive but hidden: it doubles as the GPU compositor
+        // sentinel so popup/Settings can open without a cold wgpu init.
         let hide = match self.toast_window {
             Some(id) => hide_toast(id),
             None => Task::none(),
@@ -1234,14 +1277,7 @@ impl App {
 
 fn place_popup(id: window::Id) -> Task<Message> {
     window::scale_factor(id).then(move |scale| {
-        window::monitor_size(id).then(move |monitor| {
-            window::size(id).map(move |size| Message::PlacePopup {
-                id,
-                scale,
-                monitor,
-                size,
-            })
-        })
+        window::monitor_size(id).map(move |monitor| Message::PlacePopup { id, scale, monitor })
     })
 }
 
@@ -1504,7 +1540,9 @@ fn window_platform_specific() -> window::settings::PlatformSpecific {
     window::settings::PlatformSpecific {
         drag_and_drop: false,
         skip_taskbar: false,
-        undecorated_shadow: true,
+        // Match the popup: DWM undecorated shadows flash white on close when the
+        // wgpu surface is destroyed before the HWND is gone.
+        undecorated_shadow: false,
         corner_preference: window::settings::platform::CornerPreference::Round,
     }
 }

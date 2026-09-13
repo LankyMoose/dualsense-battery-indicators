@@ -1,14 +1,14 @@
 [package]
-name = "dualsense-battery-indicators"
+name = "sdsc-utils"
 version = "1.2.1"
 edition = "2024"
 rust-version = "1.88"
-description = "DualSense Battery Indicators — show DualSense controller battery levels in the system tray"
+description = "SDSC Utils — system tray battery, lightbar, and identify utilities for DualSense controllers"
 authors = ["LankyMoose"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/LankyMoose/dualsense-battery-indicators"
-homepage = "https://github.com/LankyMoose/dualsense-battery-indicators"
+repository = "https://github.com/LankyMoose/sdsc-utils"
+homepage = "https://github.com/LankyMoose/sdsc-utils"
 keywords = ["dualsense", "playstation", "battery", "hid", "tray"]
 categories = ["hardware-support", "gui"]
 build = "build.rs"
@@ -17,10 +17,18 @@ build = "build.rs"
 default = []
 dev-emulate = []
 
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.24.2", default-features = false }
+windows = { version = "0.61", features = [
+    "ApplicationModel",
+    "Foundation",
+] }
+
 [dependencies]
 crc32fast = "1.5.0"
 hidapi = "2.6.6"
 iced = { version = "0.14.0", features = ["canvas", "tokio", "svg", "image"] }
+png = "0.17"
 resvg = { version = "0.45", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,9 +40,6 @@ resvg = { version = "0.45", default-features = false }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
-
-[target.'cfg(windows)'.dependencies]
-tray-icon = { version = "0.24.2", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24.2", default-features = false }

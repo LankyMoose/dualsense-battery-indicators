@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const DISPLAY_NAME: &str = "DualSense Battery Indicators";
+const DISPLAY_NAME: &str = "SDSC Utils";
 const TRAY_SIZE: u32 = 32;
 
 fn main() {

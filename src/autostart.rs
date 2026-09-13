@@ -1,9 +1,11 @@
-//! Windows Startup-folder autostart helpers.
+//! Windows autostart helpers.
 //!
-//! Uses a `.lnk` shortcut so login does not flash a console (unlike a `.cmd` launcher).
+//! Portable builds use a Startup-folder `.lnk`. Packaged (MSIX / Store) builds use
+//! the `desktop:StartupTask` declared in `packaging/AppxManifest.xml`.
 
 use crate::app_log;
 use crate::app_meta::PKG_NAME;
+use crate::packaged;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,9 +17,16 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// TaskId must match `packaging/AppxManifest.xml` `desktop:StartupTask`.
+#[cfg(windows)]
+const STARTUP_TASK_ID: &str = "SdscUtilsStartup";
+
 pub fn is_enabled() -> bool {
     #[cfg(windows)]
     {
+        if packaged::is_packaged() {
+            return packaged_is_enabled();
+        }
         migrate_legacy_cmd();
         startup_lnk_path()
             .map(|path| path.exists())
@@ -35,10 +44,15 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
 }
 
 /// If an older Startup `.cmd` entry exists, replace it with a silent `.lnk`.
-/// Safe to call on every launch.
+/// Safe to call on every launch. No-op when packaged.
 pub fn ensure_quiet_entry() {
     #[cfg(windows)]
-    migrate_legacy_cmd();
+    {
+        if packaged::is_packaged() {
+            return;
+        }
+        migrate_legacy_cmd();
+    }
 }
 
 pub fn install() -> Result<(), String> {
@@ -49,6 +63,10 @@ pub fn install() -> Result<(), String> {
 
     #[cfg(windows)]
     {
+        if packaged::is_packaged() {
+            return packaged_set_enabled(true);
+        }
+
         let exe = env::current_exe().map_err(|e| e.to_string())?;
         let lnk_path = startup_lnk_path()?;
         if let Some(parent) = lnk_path.parent() {
@@ -76,6 +94,10 @@ pub fn uninstall() -> Result<(), String> {
 
     #[cfg(windows)]
     {
+        if packaged::is_packaged() {
+            return packaged_set_enabled(false);
+        }
+
         let lnk_path = startup_lnk_path()?;
         let cmd_path = startup_cmd_path()?;
         let mut removed_any = false;
@@ -98,6 +120,81 @@ pub fn uninstall() -> Result<(), String> {
     }
 }
 
+#[cfg(windows)]
+fn packaged_is_enabled() -> bool {
+    match packaged_task_state() {
+        Ok(state) => state == PackagedStartupState::Enabled,
+        Err(err) => {
+            app_log::warn(format!("packaged autostart state: {err}"));
+            false
+        }
+    }
+}
+
+#[cfg(windows)]
+fn packaged_set_enabled(enabled: bool) -> Result<(), String> {
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+    use windows::core::HSTRING;
+
+    let task = StartupTask::GetAsync(&HSTRING::from(STARTUP_TASK_ID))
+        .map_err(|e| format!("StartupTask::GetAsync: {e}"))?
+        .get()
+        .map_err(|e| format!("StartupTask::GetAsync wait: {e}"))?;
+
+    if enabled {
+        let state = task
+            .RequestEnableAsync()
+            .map_err(|e| format!("RequestEnableAsync: {e}"))?
+            .get()
+            .map_err(|e| format!("RequestEnableAsync wait: {e}"))?;
+        match state {
+            StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+                app_log::info("packaged StartupTask enabled");
+                Ok(())
+            }
+            StartupTaskState::DisabledByUser => {
+                Err("startup was disabled in Task Manager; re-enable it there first".into())
+            }
+            StartupTaskState::DisabledByPolicy => {
+                Err("startup is disabled by system policy".into())
+            }
+            other => Err(format!("could not enable startup (state={other:?})")),
+        }
+    } else {
+        task.Disable()
+            .map_err(|e| format!("StartupTask::Disable: {e}"))?;
+        app_log::info("packaged StartupTask disabled");
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackagedStartupState {
+    Enabled,
+    Disabled,
+}
+
+#[cfg(windows)]
+fn packaged_task_state() -> Result<PackagedStartupState, String> {
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+    use windows::core::HSTRING;
+
+    let task = StartupTask::GetAsync(&HSTRING::from(STARTUP_TASK_ID))
+        .map_err(|e| format!("StartupTask::GetAsync: {e}"))?
+        .get()
+        .map_err(|e| format!("StartupTask::GetAsync wait: {e}"))?;
+    let state = task
+        .State()
+        .map_err(|e| format!("StartupTask::State: {e}"))?;
+    Ok(match state {
+        StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+            PackagedStartupState::Enabled
+        }
+        _ => PackagedStartupState::Disabled,
+    })
+}
+
 /// Replace a leftover Startup `.cmd` with a silent `.lnk` (fixes console flash on login).
 #[cfg(windows)]
 fn migrate_legacy_cmd() {
@@ -110,8 +207,6 @@ fn migrate_legacy_cmd() {
     if !cmd_path.exists() {
         return;
     }
-    // Prefer migrating in place so the next login is quiet even if the user never
-    // toggles the setting. If shortcut creation fails, leave the .cmd alone.
     if let Err(err) = install() {
         app_log::warn(format!(
             "failed to migrate legacy autostart {} → {}: {err}",
@@ -159,7 +254,6 @@ fn create_shortcut(lnk: &Path, target: &Path, work_dir: &Path) -> Result<(), Str
 
 #[cfg(windows)]
 fn ps_single_quoted(s: &str) -> String {
-    // PowerShell single-quoted strings escape ' by doubling it.
     s.replace('\'', "''")
 }
 

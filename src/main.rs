@@ -14,6 +14,7 @@ mod icon;
 mod known;
 mod lightbar;
 mod notify;
+mod packaged;
 mod percent_ring;
 mod popup_view;
 mod prefs;

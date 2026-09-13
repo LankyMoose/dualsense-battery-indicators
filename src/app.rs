@@ -23,6 +23,7 @@ use crate::lightbar::{
     self, LOW_BATTERY_ORANGE, LOW_BATTERY_PULSE_GAP_MS, LOW_BATTERY_PULSE_ON_MS,
 };
 use crate::notify::{NotifyEvent, NotifyTracker};
+use crate::paths;
 use crate::popup_view::{self, ControllerRow, PopupMessage};
 use crate::prefs::{Prefs, ToastPosition, clamp_low_battery_percent};
 use crate::theme;
@@ -108,6 +109,8 @@ pub enum Message {
     },
     /// Advance the active toast slide animation.
     ToastFrame,
+    /// Redraw the controller popup while an Identify ring flash is running.
+    IdentifyFrame,
     /// Begin dismiss (slide-out) for the toast of the given generation.
     ToastDismiss(u64),
 
@@ -207,6 +210,7 @@ impl App {
         let known = KnownControllers::load();
         let analytics = AnalyticsStore::load();
         color::set_active_spectrum(prefs.spectrum.clone());
+        lightbar::set_enabled(prefs.lightbar_enabled);
 
         #[cfg(windows)]
         autostart::ensure_quiet_entry();
@@ -302,6 +306,10 @@ impl App {
 
         if self.toast_animating() {
             subscriptions.push(window::frames().map(|_| Message::ToastFrame));
+        }
+
+        if self.popup_state.identify_flash_active() {
+            subscriptions.push(window::frames().map(|_| Message::IdentifyFrame));
         }
 
         Subscription::batch(subscriptions)
@@ -401,6 +409,10 @@ impl App {
                 window::move_to(id, start).chain(show_toast_without_activate(id))
             }
             Message::ToastFrame => self.animate_toast(),
+            Message::IdentifyFrame => {
+                self.popup_state.tick_identify_flash();
+                Task::none()
+            }
             Message::ToastDismiss(generation) => {
                 if generation == self.toast_generation {
                     self.dismiss_toast()
@@ -438,14 +450,14 @@ impl App {
         }
     }
 
-    fn apply_tray(&mut self) {
+    fn apply_tray(&mut self) -> Task<Message> {
         let icon = icon::icon_for_controllers(&self.controllers);
         let tooltip = icon::tooltip_for_controllers(&self.controllers);
         if let Some(tray) = self.tray_icon.as_mut() {
             let _ = tray.set_icon(Some(icon));
             let _ = tray.set_tooltip(Some(tooltip));
         }
-        self.sync_popup_rows();
+        self.sync_popup_rows_and_fit()
     }
 
     // -----------------------------------------------------------------------
@@ -565,7 +577,7 @@ impl App {
 
         if !controllers_changed && !known_changed {
             if self.prefs.analytics_enabled {
-                self.sync_popup_rows();
+                return self.sync_popup_rows_and_fit();
             }
             return Task::none();
         }
@@ -582,18 +594,21 @@ impl App {
         }
 
         self.known.save();
-        self.apply_tray();
-        self.queue_notifications(events)
+        let tray = self.apply_tray();
+        tray.chain(self.queue_notifications(events))
     }
 
     fn sync_low_battery(&self) {
-        let threshold = self.prefs.low_battery_percent;
-        let list: Vec<(String, u8)> = self
-            .controllers
-            .iter()
-            .filter(|c| c.is_low_battery(threshold) && !is_emulated_serial(&c.serial))
-            .map(|c| (c.serial.clone(), c.percent))
-            .collect();
+        let list: Vec<(String, u8)> = if lightbar::is_enabled() {
+            let threshold = self.prefs.low_battery_percent;
+            self.controllers
+                .iter()
+                .filter(|c| c.is_low_battery(threshold) && !is_emulated_serial(&c.serial))
+                .map(|c| (c.serial.clone(), c.percent))
+                .collect()
+        } else {
+            Vec::new()
+        };
         if let Ok(mut guard) = self.low_battery.lock() {
             *guard = list;
         }
@@ -638,6 +653,28 @@ impl App {
         self.popup_rows = rows;
     }
 
+    /// Rebuild popup rows and, when the flyout is open, resize/re-anchor if height changed.
+    fn sync_popup_rows_and_fit(&mut self) -> Task<Message> {
+        let before = popup_view::window_height(self.popup_rows.len());
+        self.sync_popup_rows();
+        let after = popup_view::window_height(self.popup_rows.len());
+        if before == after {
+            Task::none()
+        } else {
+            self.fit_popup_window()
+        }
+    }
+
+    fn fit_popup_window(&self) -> Task<Message> {
+        let Some(id) = self.popup_window else {
+            return Task::none();
+        };
+        let height = popup_view::window_height(self.popup_rows.len());
+        let size = Size::new(popup_view::WIDTH, height);
+        let position = popup_position(self.tray_anchor, self.popup_scale, self.popup_monitor, size);
+        window::resize(id, size).chain(window::move_to(id, position))
+    }
+
     fn toggle_popup(&mut self) -> Task<Message> {
         if self.popup_window.is_some() {
             self.close_popup()
@@ -673,7 +710,8 @@ impl App {
         let height = popup_view::window_height(self.popup_rows.len());
         let size = Size::new(popup_view::WIDTH, height);
         let position = popup_position(self.tray_anchor, self.popup_scale, self.popup_monitor, size);
-        window::move_to(id, position)
+        window::resize(id, size)
+            .chain(window::move_to(id, position))
             .chain(window::set_mode(id, window::Mode::Windowed))
             .chain(window::gain_focus(id))
     }
@@ -696,17 +734,16 @@ impl App {
                 close.chain(self.open_configure())
             }
             PopupMessage::Identify(serial) => {
-                self.identify(&serial);
+                if self.identify(&serial) {
+                    self.popup_state.begin_identify_flash(&serial);
+                }
                 Task::none()
             }
             PopupMessage::PowerOff(serial) => {
                 self.power_off(&serial);
                 Task::none()
             }
-            PopupMessage::ToggleRemember(serial) => {
-                self.toggle_remember(&serial);
-                Task::none()
-            }
+            PopupMessage::ToggleRemember(serial) => self.toggle_remember(&serial),
             PopupMessage::BeginEdit(serial) => {
                 let current = self.known.nickname(&serial).map(str::to_string);
                 self.popup_state.begin_edit(&serial, current.as_deref());
@@ -721,9 +758,10 @@ impl App {
             }
             PopupMessage::CommitNickname => {
                 if let Some((serial, nickname)) = self.popup_state.commit() {
-                    self.set_nickname(&serial, nickname);
+                    self.set_nickname(&serial, nickname)
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             PopupMessage::CancelEdit => {
                 self.popup_state.cancel();
@@ -745,6 +783,7 @@ impl App {
             low_battery_percent: self.prefs.low_battery_percent,
             toast_position: self.prefs.toast_position,
             analytics_enabled: self.prefs.analytics_enabled,
+            lightbar_enabled: self.prefs.lightbar_enabled,
             #[cfg(windows)]
             autostart: autostart::is_enabled(),
             show_developer: {
@@ -852,7 +891,7 @@ impl App {
                     self.prefs.low_battery_percent = percent;
                     self.prefs.save();
                     self.sync_low_battery();
-                    self.sync_popup_rows();
+                    return self.sync_popup_rows_and_fit();
                 }
                 Task::none()
             }
@@ -865,13 +904,23 @@ impl App {
                 self.prefs.analytics_enabled = enabled;
                 self.prefs.save();
                 self.refresh_analytics_panel();
-                self.sync_popup_rows();
+                self.sync_popup_rows_and_fit()
+            }
+            ConfigureMessage::SetLightbarEnabled(enabled) => {
+                self.prefs.lightbar_enabled = enabled;
+                self.prefs.save();
+                lightbar::set_enabled(enabled);
+                self.sync_low_battery();
+                if enabled {
+                    // Re-apply spectrum colors now that automatic writes are back on.
+                    self.apply_spectrum(self.prefs.spectrum.clone());
+                }
                 Task::none()
             }
-            ConfigureMessage::ClearAnalytics => {
-                self.analytics.clear();
-                self.refresh_analytics_panel();
-                self.sync_popup_rows();
+            ConfigureMessage::OpenDataFolder => {
+                if let Err(err) = paths::open_data_folder() {
+                    app_log::warn(format!("open data folder failed: {err}"));
+                }
                 Task::none()
             }
             #[cfg(windows)]
@@ -927,6 +976,10 @@ impl App {
         self.prefs.save();
         color::set_active_spectrum(spectrum.clone());
 
+        if !lightbar::is_enabled() {
+            return;
+        }
+
         for controller in &self.controllers {
             if is_emulated_serial(&controller.serial) {
                 continue;
@@ -945,14 +998,14 @@ impl App {
     // Controller actions
     // -----------------------------------------------------------------------
 
-    fn identify(&self, serial: &str) {
+    fn identify(&self, serial: &str) -> bool {
         if is_emulated_serial(serial) {
             app_log::info(format!("identify skipped for emulated controller {serial}"));
-            return;
+            return false;
         }
 
         let Some(controller) = self.controllers.iter().find(|c| c.serial == serial) else {
-            return;
+            return false;
         };
 
         if self
@@ -960,7 +1013,7 @@ impl App {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return;
+            return false;
         }
 
         let serial = serial.to_string();
@@ -973,6 +1026,7 @@ impl App {
             }
             identifying.store(false, Ordering::SeqCst);
         });
+        true
     }
 
     fn power_off(&self, serial: &str) {
@@ -1004,9 +1058,9 @@ impl App {
         });
     }
 
-    fn toggle_remember(&mut self, serial: &str) {
+    fn toggle_remember(&mut self, serial: &str) -> Task<Message> {
         if is_emulated_serial(serial) {
-            return;
+            return Task::none();
         }
 
         if self.known.is_remembered(serial) {
@@ -1016,16 +1070,18 @@ impl App {
         }
 
         self.known.save();
-        self.sync_popup_rows();
+        self.sync_popup_rows_and_fit()
     }
 
-    fn set_nickname(&mut self, serial: &str, nickname: Option<String>) {
+    fn set_nickname(&mut self, serial: &str, nickname: Option<String>) -> Task<Message> {
         if is_emulated_serial(serial) {
-            return;
+            return Task::none();
         }
         if self.known.set_nickname(serial, nickname) {
             self.known.save();
-            self.sync_popup_rows();
+            self.sync_popup_rows_and_fit()
+        } else {
+            Task::none()
         }
     }
 
@@ -1808,7 +1864,7 @@ fn start_low_battery_pulse_thread(
         loop {
             thread::sleep(gap);
 
-            if identifying.load(Ordering::SeqCst) {
+            if identifying.load(Ordering::SeqCst) || !lightbar::is_enabled() {
                 continue;
             }
 
@@ -1818,7 +1874,7 @@ fn start_low_battery_pulse_thread(
                 .unwrap_or_default();
 
             for (serial, percent) in targets {
-                if identifying.load(Ordering::SeqCst) {
+                if identifying.load(Ordering::SeqCst) || !lightbar::is_enabled() {
                     break;
                 }
 
@@ -1831,7 +1887,7 @@ fn start_low_battery_pulse_thread(
                 }
                 thread::sleep(on);
 
-                if identifying.load(Ordering::SeqCst) {
+                if identifying.load(Ordering::SeqCst) || !lightbar::is_enabled() {
                     break;
                 }
 

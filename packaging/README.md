@@ -4,7 +4,7 @@
 
 - [`AppxManifest.xml`](AppxManifest.xml) uses a dummy `Publisher="CN=SDSCUtils-Sideload"`.
 - After you associate the app with Partner Center, Visual Studio / the Store packaging tools rewrite **Identity Name** and **Publisher** to the Store-assigned values. Do not invent a production CN here.
-- `pack-msix.ps1` stamps `Identity Version` from `Cargo.toml` (`1.2.1` → `1.2.1.0`) so each tagged upload is a newer package for Store auto-update.
+- `pack-msix.ps1` stamps `Identity Version` from `Cargo.toml` (`1.3.0` → `1.3.0.0`) so each tagged upload is a newer package for Store auto-update.
 
 ## Local pack
 

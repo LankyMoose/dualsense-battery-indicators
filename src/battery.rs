@@ -260,14 +260,16 @@ pub fn poll_controllers() -> Result<Vec<ControllerStatus>, String> {
     lightbar::sync_lightbar_claims(statuses.iter().map(|s| s.serial.as_str()));
 
     // Apply lightbar once per physical pad (after USB/BT collapse).
-    with_lightbar_lock(|| {
-        for status in &statuses {
-            let color = color_for_battery_percent(status.percent);
-            if let Err(err) = lightbar::apply_lightbar_rgb_unlocked(&status.serial, color) {
-                lightbar::warn_lightbar(status.product, err);
+    if lightbar::is_enabled() {
+        with_lightbar_lock(|| {
+            for status in &statuses {
+                let color = color_for_battery_percent(status.percent);
+                if let Err(err) = lightbar::apply_lightbar_rgb_unlocked(&status.serial, color) {
+                    lightbar::warn_lightbar(status.product, err);
+                }
             }
-        }
-    });
+        });
+    }
 
     Ok(statuses)
 }

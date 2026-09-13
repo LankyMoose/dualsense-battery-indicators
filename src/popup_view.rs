@@ -1,15 +1,18 @@
 //! Tray-anchored controller overview, rendered by the iced daemon.
 
 use crate::battery::ControllerStatus;
-use crate::color::BatterySpectrum;
+use crate::color::{BatterySpectrum, Rgb};
 use crate::known::KnownController;
+use crate::lightbar;
 use crate::percent_ring::{self, POPUP_SIZE};
 use crate::svg_icon;
 use crate::theme;
 use iced::widget::{
     Column, button, checkbox, column, container, row, scrollable, space, svg, text, text_input,
+    tooltip,
 };
 use iced::{Alignment, Color, Element, Fill, Length, Shrink};
+use std::time::{Duration, Instant};
 
 /// Logical width of the popup window.
 pub const WIDTH: f32 = 380.0;
@@ -23,6 +26,7 @@ const PADDING: f32 = 10.0;
 const EMPTY_HEIGHT: f32 = 56.0;
 const ICON_SIZE: f32 = 18.0;
 const NICKNAME_MAX_CHARS: usize = 32;
+const TOOLTIP_DELAY: Duration = Duration::from_millis(350);
 
 /// Widget id of the nickname editor, so the daemon can focus it on demand.
 pub fn nickname_input_id() -> iced::widget::Id {
@@ -114,6 +118,13 @@ impl ControllerRow {
     }
 }
 
+/// Active Identify ring flash for one controller row.
+#[derive(Debug, Clone)]
+struct IdentifyFlash {
+    serial: String,
+    started: Instant,
+}
+
 /// Transient popup UI state owned by the daemon.
 #[derive(Debug, Default)]
 pub struct State {
@@ -121,6 +132,8 @@ pub struct State {
     pub editing_serial: Option<String>,
     /// Current nickname draft.
     pub draft: String,
+    /// Ring flash started with the last successful Identify.
+    identify_flash: Option<IdentifyFlash>,
 }
 
 impl State {
@@ -132,6 +145,39 @@ impl State {
     pub fn cancel(&mut self) {
         self.editing_serial = None;
         self.draft.clear();
+        self.identify_flash = None;
+    }
+
+    /// Start the UI ring flash that mirrors the lightbar Identify pattern.
+    pub fn begin_identify_flash(&mut self, serial: &str) {
+        self.identify_flash = Some(IdentifyFlash {
+            serial: serial.to_string(),
+            started: Instant::now(),
+        });
+    }
+
+    /// True while a ring Identify flash still has frames to draw.
+    pub fn identify_flash_active(&self) -> bool {
+        self.identify_flash.as_ref().is_some_and(|flash| {
+            lightbar::identify_flash_is_white(flash.started, Instant::now()).is_some()
+        })
+    }
+
+    /// Drop finished flash state; call from the frame subscription.
+    pub fn tick_identify_flash(&mut self) {
+        let finished = self.identify_flash.as_ref().is_some_and(|flash| {
+            lightbar::identify_flash_is_white(flash.started, Instant::now()).is_none()
+        });
+        if finished {
+            self.identify_flash = None;
+        }
+    }
+
+    fn ring_flash_white(&self, serial: &str) -> bool {
+        self.identify_flash.as_ref().is_some_and(|flash| {
+            flash.serial == serial
+                && lightbar::identify_flash_is_white(flash.started, Instant::now()) == Some(true)
+        })
     }
 
     /// Finish editing and return `(serial, nickname)`; `None` clears the nickname.
@@ -184,6 +230,7 @@ pub fn view<'a>(
         icon_button(
             svg_icon::SETTINGS_SVG,
             theme::MUTED,
+            "Settings",
             PopupMessage::OpenSettings,
         ),
     ]
@@ -225,7 +272,13 @@ fn controller_row<'a>(
     spectrum: &BatterySpectrum,
 ) -> Element<'a, PopupMessage> {
     let accent = theme::from_rgb(spectrum.color_at_percent(entry.percent));
-    let ring_color = if entry.connected { accent } else { theme::DIM };
+    let ring_color = if state.ring_flash_white(&entry.serial) {
+        theme::from_rgb(Rgb::WHITE)
+    } else if entry.connected {
+        accent
+    } else {
+        theme::DIM
+    };
     let ring = percent_ring::percent_ring(entry.percent, ring_color, POPUP_SIZE, entry.eta.clone());
 
     let name: Element<'_, PopupMessage> = if state.is_editing(&entry.serial) {
@@ -257,11 +310,13 @@ fn controller_row<'a>(
         actions = actions.push(icon_button(
             svg_icon::CHECK_SVG,
             theme::SUCCESS,
+            "Save nickname",
             PopupMessage::CommitNickname,
         ));
         actions = actions.push(icon_button(
             svg_icon::CLOSE_SVG,
             theme::MUTED,
+            "Cancel",
             PopupMessage::CancelEdit,
         ));
     } else {
@@ -269,6 +324,7 @@ fn controller_row<'a>(
             actions = actions.push(icon_button(
                 svg_icon::EDIT_SVG,
                 theme::MUTED,
+                "Edit nickname",
                 PopupMessage::BeginEdit(entry.serial.clone()),
             ));
         }
@@ -276,6 +332,7 @@ fn controller_row<'a>(
             actions = actions.push(icon_button(
                 svg_icon::IDENTIFY_SVG,
                 theme::MUTED,
+                "Identify",
                 PopupMessage::Identify(entry.serial.clone()),
             ));
         }
@@ -283,6 +340,7 @@ fn controller_row<'a>(
             actions = actions.push(icon_button(
                 svg_icon::POWER_SVG,
                 theme::MUTED,
+                "Power off",
                 PopupMessage::PowerOff(entry.serial.clone()),
             ));
         }
@@ -333,9 +391,10 @@ fn controller_row<'a>(
 fn icon_button<'a>(
     source: &'static str,
     color: Color,
+    tip: &'static str,
     message: PopupMessage,
 ) -> Element<'a, PopupMessage> {
-    button(
+    let button = button(
         svg(svg::Handle::from_memory(source.as_bytes()))
             .width(Length::Fixed(ICON_SIZE))
             .height(Length::Fixed(ICON_SIZE))
@@ -345,6 +404,16 @@ fn icon_button<'a>(
     .width(Shrink)
     .height(Shrink)
     .on_press(message)
-    .style(theme::ghost)
+    .style(theme::ghost);
+
+    tooltip(
+        button,
+        text(tip).size(12.0).color(theme::INK),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .padding(6)
+    .delay(TOOLTIP_DELAY)
+    .style(theme::tooltip)
     .into()
 }

@@ -6,10 +6,10 @@ use crate::color::{Rgb, color_for_battery_percent};
 use crate::steam;
 use hidapi::{BusType, HidApi, HidDevice};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const OUTPUT_REPORT_USB_ID: u8 = 0x02;
 const OUTPUT_REPORT_USB_SIZE: usize = 63;
@@ -34,17 +34,44 @@ const OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT: u8 = 1 << 1;
 
 pub const IDENTIFY_FLASH_MS: u64 = 150;
 pub const IDENTIFY_FLASH_COUNT: u32 = 5;
+
+/// Whether the identify sequence should show white at `now`.
+///
+/// Matches [`identify_controller`]: white for [`IDENTIFY_FLASH_MS`], then battery
+/// color for the same duration, repeated [`IDENTIFY_FLASH_COUNT`] times.
+/// Returns `None` when the sequence is finished.
+pub fn identify_flash_is_white(started: Instant, now: Instant) -> Option<bool> {
+    let elapsed_ms = now.saturating_duration_since(started).as_millis() as u64;
+    let step = elapsed_ms / IDENTIFY_FLASH_MS;
+    if step >= u64::from(IDENTIFY_FLASH_COUNT) * 2 {
+        None
+    } else {
+        Some(step.is_multiple_of(2))
+    }
+}
 pub const LOW_BATTERY_PULSE_ON_MS: u64 = 400;
 pub const LOW_BATTERY_PULSE_GAP_MS: u64 = 1600;
 pub const LOW_BATTERY_ORANGE: Rgb = Rgb::ORANGE;
 
 static LIGHTBAR_LOCK: Mutex<()> = Mutex::new(());
 static BT_OUTPUT_SEQ: AtomicU8 = AtomicU8::new(0);
+/// When false, automatic battery/poll/pulse RGB writes are skipped (Identify / CLI still work).
+static AUTOMATIC_ENABLED: AtomicBool = AtomicBool::new(true);
 /// Serials that have already received a `LIGHT_OUT` claim this connection.
 static CLAIMED_SERIALS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Last observed Steam running state; forget claims when it changes.
 static LAST_STEAM_RUNNING: LazyLock<Mutex<Option<bool>>> = LazyLock::new(|| Mutex::new(None));
+
+/// Enable or disable automatic lightbar RGB (poll + low-battery pulse).
+pub fn set_enabled(enabled: bool) {
+    AUTOMATIC_ENABLED.store(enabled, Ordering::SeqCst);
+}
+
+/// Whether automatic lightbar RGB writes should run.
+pub fn is_enabled() -> bool {
+    AUTOMATIC_ENABLED.load(Ordering::SeqCst)
+}
 
 fn next_bt_seq_tag() -> u8 {
     let seq = BT_OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed) & 0x0F;
@@ -379,5 +406,22 @@ mod tests {
         assert!(take_claim_if_needed("aabbcc"));
 
         clear_claim_test_state();
+    }
+
+    #[test]
+    fn identify_flash_matches_lightbar_timing() {
+        let start = Instant::now();
+        assert_eq!(identify_flash_is_white(start, start), Some(true));
+        assert_eq!(
+            identify_flash_is_white(start, start + Duration::from_millis(IDENTIFY_FLASH_MS)),
+            Some(false)
+        );
+        assert_eq!(
+            identify_flash_is_white(start, start + Duration::from_millis(IDENTIFY_FLASH_MS * 2)),
+            Some(true)
+        );
+        let done_at =
+            start + Duration::from_millis(IDENTIFY_FLASH_MS * u64::from(IDENTIFY_FLASH_COUNT) * 2);
+        assert_eq!(identify_flash_is_white(start, done_at), None);
     }
 }

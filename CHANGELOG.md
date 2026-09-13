@@ -7,11 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-13
+
+### Added
+
+- Settings → System: **Open data folder** opens the app data directory in the file explorer.
+- Settings → Lightbar: **Enable lightbar** toggle (on by default). When off, battery-driven colors and the low-battery pulse stop writing RGB; Identify still works. Existing prefs without the key stay enabled.
+
 ### Changed
 
 - Renamed the product to **SDSC Utils** (`sdsc-utils`). DualSense is referenced only as compatible hardware.
 - Windows Store / MSIX packaging (`packaging/`) with packaged Startup Task when installed from the Store; portable builds still use a Startup `.lnk`.
 - Release workflow publishes `sdsc-utils.exe` and `sdsc-utils.msix`.
+- Icon-only buttons show hover tooltips (controller popup actions and Settings close).
+
+### Removed
+
+- Settings → Analytics: **Clear recorded data** button (delete or edit files via **Open data folder** instead).
+
+### Fixed
+
+- Controller popup window height updates when controllers connect or disconnect while it is open.
+- Controller list percent ring flashes white in sync with Identify (same timing as the lightbar).
 
 ## [1.2.1] - 2026-09-13
 
@@ -222,6 +239,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.3.0]: https://github.com/LankyMoose/sdsc-utils/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/LankyMoose/sdsc-utils/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/LankyMoose/sdsc-utils/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/LankyMoose/sdsc-utils/compare/v1.0.1...v1.1.0

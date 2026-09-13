@@ -21,9 +21,9 @@ System tray app for DualSense wireless controllers (and DualSense Edge): battery
 - Steam-style overlay toasts when a pad **connects**, **disconnects**, hits **low battery** (at or below a configurable % while discharging; default ≤5%), or **finishes charging** (tray → **Settings**; on by default)
 - Toasts appear in any configurable screen corner as always-on-top cards and dismiss on click or automatically after five seconds
 - Dark **iced** Configure window for notification (including low-battery %), toast-position, autostart, lightbar, and **opt-in battery analytics** settings
-- **Battery analytics** (off by default): learns each DualSense battery step for charge and play, shows remaining-time estimates after one qualifying step (interpolating within the current percent bucket; refining as more steps are observed; mid-cycle unplug/charge does not wipe history), and draws per-controller coverage charts in Settings → Analytics (local `analytics.json` only; Clear recorded data available)
+- **Battery analytics** (off by default): learns each DualSense battery step for charge and play, shows remaining-time estimates after one qualifying step (interpolating within the current percent bucket; refining as more steps are observed; mid-cycle unplug/charge does not wipe history), and draws per-controller coverage charts in Settings → Analytics (local `analytics.json` only; open the data folder from Settings → System to inspect or delete files)
 - Detects controllers connecting/disconnecting within a few seconds
-- Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** with a left-hand tab list. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
+- Lightbar color blends across a customizable **2–5 stop spectrum** (default **blue → purple → red**) as battery drops (updated about once a minute); edit via tray **Settings** with a left-hand tab list. An **Enable lightbar** toggle (on by default) pauses battery-driven colors and the low-battery pulse while leaving Identify available. The Lightbar panel stays fully expanded when active: drag stops along the bar, click empty areas to add stops (up to 5), and drag a stop away to remove it (down to 2). Changes apply immediately.
 - At **low battery while discharging** (same configurable threshold as the toast; default ≤5%), the lightbar periodically pulses **orange**
 - Icons live in `assets/icons/` (SVG) and are rasterized at build/runtime
 - UI shell is an **iced** daemon (tray via `tray-icon`); Configure, controller popup, and toasts are iced windows
@@ -96,7 +96,7 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense SVG icon (rasterized at build time via `winres`).
 - Log file: `%APPDATA%\sdsc-utils\app.log`
-- Prefs file: `%APPDATA%\sdsc-utils\prefs.json` (notification toggles/threshold/position + lightbar spectrum + analytics opt-in)
+- Prefs file: `%APPDATA%\sdsc-utils\prefs.json` (notification toggles/threshold/position + lightbar spectrum/enabled + analytics opt-in)
 - Remembered controllers: `%APPDATA%\sdsc-utils\controllers.json` (remembered pads + nicknames)
 - Battery analytics (when enabled): `%APPDATA%\sdsc-utils\analytics.json` (per-pad step samples + in-progress timer)
 - Autostart: portable builds write `sdsc-utils.lnk` into the user Startup folder; Microsoft Store / MSIX builds use a packaged Startup Task (both toggleable in **Configure**). Older portable `.cmd` entries are migrated to `.lnk` automatically.
@@ -146,8 +146,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 CI builds on Windows. To publish a binary + MSIX artifact:
 
 ```bash
-git tag v1.2.1
-git push origin v1.2.1
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 The release workflow attaches `sdsc-utils.exe` and `sdsc-utils.msix` to the GitHub Release for that tag. Upload the MSIX to Partner Center for Store distribution. You can also run the **Release** workflow manually (`workflow_dispatch`).

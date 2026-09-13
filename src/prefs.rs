@@ -1,7 +1,6 @@
 //! Persisted notification preferences.
 
 use crate::app_log;
-use crate::app_meta::PKG_NAME;
 use crate::battery::LOW_BATTERY_PERCENT;
 use crate::color::BatterySpectrum;
 use serde::{Deserialize, Serialize};
@@ -46,6 +45,9 @@ pub struct Prefs {
     /// Opt-in local charge/play duration analytics (default off).
     #[serde(default)]
     pub analytics_enabled: bool,
+    /// Drive DualSense lightbar from battery spectrum (default on).
+    #[serde(default = "default_true")]
+    pub lightbar_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -79,6 +81,7 @@ impl Default for Prefs {
             toast_position: ToastPosition::default(),
             spectrum: BatterySpectrum::default_spectrum(),
             analytics_enabled: false,
+            lightbar_enabled: true,
         }
     }
 }
@@ -124,38 +127,7 @@ impl Prefs {
 }
 
 fn prefs_path() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join(PKG_NAME).join("prefs.json");
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(PKG_NAME)
-                .join("prefs.json");
-        }
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
-            return PathBuf::from(config).join(PKG_NAME).join("prefs.json");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".config")
-                .join(PKG_NAME)
-                .join("prefs.json");
-        }
-    }
-
-    PathBuf::from(format!("{PKG_NAME}-prefs.json"))
+    crate::paths::data_dir().join("prefs.json")
 }
 
 #[cfg(test)]
@@ -172,6 +144,7 @@ mod tests {
         assert!(prefs.notify_disconnect);
         assert_eq!(prefs.low_battery_percent, LOW_BATTERY_PERCENT);
         assert!(!prefs.analytics_enabled);
+        assert!(prefs.lightbar_enabled);
     }
 
     #[test]
@@ -181,6 +154,7 @@ mod tests {
         )
         .unwrap();
         assert!(!prefs.analytics_enabled);
+        assert!(prefs.lightbar_enabled);
     }
 
     #[test]

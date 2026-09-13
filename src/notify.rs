@@ -193,6 +193,7 @@ mod tests {
             toast_position: Default::default(),
             spectrum: Default::default(),
             analytics_enabled: false,
+            lightbar_enabled: true,
         }
     }
 

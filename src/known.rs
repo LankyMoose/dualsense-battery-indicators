@@ -1,7 +1,6 @@
 //! Persisted remembered DualSense pads and nicknames (`controllers.json`).
 
 use crate::app_log;
-use crate::app_meta::PKG_NAME;
 use crate::battery::ControllerStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -238,38 +237,7 @@ impl KnownControllers {
 }
 
 fn store_path() -> PathBuf {
-    prefs_dir().join("controllers.json")
-}
-
-fn prefs_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join(PKG_NAME);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(PKG_NAME);
-        }
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
-            return PathBuf::from(config).join(PKG_NAME);
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".config").join(PKG_NAME);
-        }
-    }
-
-    PathBuf::from(PKG_NAME)
+    crate::paths::data_dir().join("controllers.json")
 }
 
 #[cfg(test)]

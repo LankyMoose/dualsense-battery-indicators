@@ -15,11 +15,12 @@ use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Path};
 use iced::widget::{
     Column, Row, button, canvas as canvas_widget, checkbox, column, container, mouse_area, row,
-    scrollable, slider, space, svg, text,
+    scrollable, slider, space, svg, text, tooltip,
 };
 use iced::{
     Alignment, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Size, Theme,
 };
+use std::time::Duration;
 
 /// Logical width of the configure window.
 pub const WIDTH: f32 = 420.0;
@@ -117,6 +118,7 @@ pub struct ConfigureSettings {
     pub low_battery_percent: u8,
     pub toast_position: ToastPosition,
     pub analytics_enabled: bool,
+    pub lightbar_enabled: bool,
     #[cfg(windows)]
     pub autostart: bool,
     pub show_developer: bool,
@@ -158,7 +160,8 @@ pub enum ConfigureMessage {
     SetLowBatteryPercent(u8),
     SetToastPosition(ToastPosition),
     SetAnalyticsEnabled(bool),
-    ClearAnalytics,
+    SetLightbarEnabled(bool),
+    OpenDataFolder,
     #[cfg(windows)]
     SetAutostart(bool),
     SelectStop(usize),
@@ -377,17 +380,25 @@ pub fn view<'a>(
 
     let header = row![
         title,
-        button(
-            svg(svg::Handle::from_memory(svg_icon::CLOSE_SVG.as_bytes()))
-                .width(Length::Fixed(ICON_SIZE))
-                .height(Length::Fixed(ICON_SIZE))
-                .style(|_theme, _status| svg::Style {
-                    color: Some(theme::MUTED)
-                }),
+        tooltip(
+            button(
+                svg(svg::Handle::from_memory(svg_icon::CLOSE_SVG.as_bytes()))
+                    .width(Length::Fixed(ICON_SIZE))
+                    .height(Length::Fixed(ICON_SIZE))
+                    .style(|_theme, _status| svg::Style {
+                        color: Some(theme::MUTED)
+                    }),
+            )
+            .padding(4)
+            .on_press(ConfigureMessage::Close)
+            .style(theme::ghost),
+            text("Close").size(12.0).color(theme::INK),
+            tooltip::Position::Bottom,
         )
-        .padding(4)
-        .on_press(ConfigureMessage::Close)
-        .style(theme::ghost),
+        .gap(6)
+        .padding(6)
+        .delay(Duration::from_millis(350))
+        .style(theme::tooltip),
     ]
     .align_y(Alignment::Center)
     .spacing(6)
@@ -479,7 +490,7 @@ fn section_content<'a>(
         Section::ToastPosition => {
             toast_position_view(settings, theme::from_rgb(state.spectrum.accent()))
         }
-        Section::Lightbar => lightbar_view(state),
+        Section::Lightbar => lightbar_view(state, settings),
         Section::Analytics => analytics_view(settings, analytics),
         #[cfg(feature = "dev-emulate")]
         Section::Developer => developer_view(),
@@ -500,6 +511,13 @@ fn system_view<'a>(settings: &ConfigureSettings) -> Element<'a, ConfigureMessage
                 .on_toggle(ConfigureMessage::SetAutostart),
         );
     }
+
+    items = items.push(
+        button(text("Open data folder").size(13.0))
+            .padding([6, 10])
+            .on_press(ConfigureMessage::OpenDataFolder)
+            .style(theme::ghost),
+    );
 
     items = items.push(
         text(format!("{DISPLAY_NAME} {PKG_VERSION}"))
@@ -598,13 +616,6 @@ fn analytics_view<'a>(
                 items = items.push(analytics_pad_card(row));
             }
         }
-
-        items = items.push(
-            button(text("Clear recorded data").size(13.0))
-                .padding([6, 10])
-                .on_press(ConfigureMessage::ClearAnalytics)
-                .style(theme::ghost),
-        );
     }
 
     items.into()
@@ -800,7 +811,30 @@ fn toast_position_view<'a>(
     .into()
 }
 
-fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage> {
+fn lightbar_view<'a>(
+    state: &'a ConfigureState,
+    settings: &ConfigureSettings,
+) -> Element<'a, ConfigureMessage> {
+    let mut content = Column::new().spacing(8).width(Fill);
+
+    content = content.push(
+        checkbox(settings.lightbar_enabled)
+            .label("Enable lightbar")
+            .size(16.0)
+            .text_size(13.0)
+            .spacing(8)
+            .on_toggle(ConfigureMessage::SetLightbarEnabled),
+    );
+
+    if !settings.lightbar_enabled {
+        content = content.push(
+            text("Battery-driven lightbar colors and the low-battery pulse are paused. Identify still works.")
+                .size(12.0)
+                .color(theme::DIM),
+        );
+        return content.into();
+    }
+
     let bar = canvas_widget(SpectrumBar {
         stops: state.spectrum.stops.clone(),
         selected: state.selected,
@@ -851,15 +885,11 @@ fn lightbar_view<'a>(state: &'a ConfigureState) -> Element<'a, ConfigureMessage>
         .on_press(ConfigureMessage::ResetSpectrum)
         .style(theme::chip(false));
 
-    let mut content = column![
-        container(bar).width(Fill).style(theme::well),
-        stops,
-        container(sv).width(Fill).style(theme::well),
-        container(hue).width(Fill).style(theme::well),
-        reset,
-    ]
-    .spacing(8)
-    .width(Fill);
+    content = content.push(container(bar).width(Fill).style(theme::well));
+    content = content.push(stops);
+    content = content.push(container(sv).width(Fill).style(theme::well));
+    content = content.push(container(hue).width(Fill).style(theme::well));
+    content = content.push(reset);
 
     if let Some(error) = state.error.as_deref() {
         content = content.push(text(error).size(12.0).color(theme::WARNING));

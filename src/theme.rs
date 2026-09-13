@@ -131,6 +131,20 @@ pub fn surface(_theme: &Theme) -> container::Style {
     }
 }
 
+/// Compact hover hint over icon-only buttons.
+pub fn tooltip(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(PANEL_HOVER)),
+        text_color: Some(INK),
+        border: Border {
+            color: LINE,
+            width: 1.0,
+            radius: RADIUS_SM.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 /// Configure content area below the title bar.
 pub fn configure_body(_theme: &Theme) -> container::Style {
     container::Style {

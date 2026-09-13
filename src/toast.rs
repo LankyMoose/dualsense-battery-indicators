@@ -32,7 +32,7 @@ impl ToastMessage {
     pub fn preview(spectrum: &BatterySpectrum) -> Self {
         const PERCENT: u8 = 70;
         Self {
-            heading: "DualSense Battery Indicators".to_string(),
+            heading: crate::app_meta::DISPLAY_NAME.to_string(),
             body: "Toasts will appear here".to_string(),
             accent: spectrum.color_at_percent(PERCENT),
             percent: PERCENT,

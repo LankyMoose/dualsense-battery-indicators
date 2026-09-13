@@ -1,8 +1,14 @@
-# DualSense Battery Indicators
+# SDSC Utils
 
-System tray app that shows connected DualSense controller battery levels, colors each lightbar from battery level, and can identify a controller by flashing its light.
+System tray app for DualSense wireless controllers (and DualSense Edge): battery levels, lightbar colors from charge, identify flash, overlay toasts, and optional local battery analytics.
 
-**Unofficial.** DualSense, PlayStation, and related marks are trademarks of Sony Interactive Entertainment Inc. This project is not affiliated with, endorsed by, or sponsored by Sony.
+**Unofficial.** DualSense, DualSense Edge, PlayStation, and related marks are trademarks of Sony Interactive Entertainment Inc. This project is not affiliated with, endorsed by, or sponsored by Sony.
+
+## Download
+
+**Recommended (Windows):** install from the [Microsoft Store](https://apps.microsoft.com/) once the listing is live (search for **SDSC Utils**). Store installs are signed by Microsoft and update automatically through the Store / `winget`.
+
+**Advanced:** portable builds are attached to [GitHub Releases](https://github.com/LankyMoose/sdsc-utils/releases) as `sdsc-utils.exe`. That executable is **not** Authenticode-signed. Browsers and Windows SmartScreen often warn on uncommon unsigned downloads — that is expected. There is no in-app auto-update for the portable build; download the next release manually when you want it.
 
 ## Features
 
@@ -24,6 +30,11 @@ System tray app that shows connected DualSense controller battery levels, colors
 - Single-instance (second launch exits quietly)
 - Logs to a file (see Troubleshooting)
 
+## Compatible hardware
+
+- DualSense wireless controller
+- DualSense Edge wireless controller
+
 ## Build
 
 Requires Rust **1.88+** (edition 2024).
@@ -32,11 +43,11 @@ Requires Rust **1.88+** (edition 2024).
 cargo build --release
 ```
 
-Binary: `target/release/dualsense-battery-indicators` (`.exe` on Windows).
+Binary: `target/release/sdsc-utils` (`.exe` on Windows).
 
 Release builds do **not** include the developer emulator (`dev-emulate` is off by default).
 
-To rename the app later, change `package.name` in `Cargo.toml` and `DISPLAY_NAME` in `src/app_meta.rs` (runtime paths follow the package name).
+Package identity: `package.name` in `Cargo.toml` is `sdsc-utils`; display name is `DISPLAY_NAME` in `src/app_meta.rs` (runtime paths follow the package name).
 
 ### Local git hooks (all branches)
 
@@ -56,7 +67,7 @@ Bypass with `git commit --no-verify` or `git push --no-verify` when needed. You 
 ```bash
 cargo run --release
 # or
-./target/release/dualsense-battery-indicators
+./target/release/sdsc-utils
 ```
 
 ### Developer emulator (optional)
@@ -75,8 +86,8 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 |------|-------------|
 | `-h` / `--help` | Print usage and exit |
 | `-V` / `--version` | Print version and exit |
-| `--install-autostart` | Windows: add a Startup entry for this exe |
-| `--uninstall-autostart` | Windows: remove that Startup entry |
+| `--install-autostart` | Windows: enable login autostart for this build |
+| `--uninstall-autostart` | Windows: disable that autostart entry |
 | `--list-controllers` | Print connected DualSense pads and exit |
 | `--dev` | Enable Developer controls in Configure (only when built with `--features dev-emulate`) |
 
@@ -84,13 +95,14 @@ That unlocks a **Developer** section in the **Configure** window with emulated c
 
 - Release builds use the Windows subsystem (no console window for the tray app).
 - The `.exe` and tray share the same DualSense SVG icon (rasterized at build time via `winres`).
-- Log file: `%APPDATA%\dualsense-battery-indicators\app.log`
-- Prefs file: `%APPDATA%\dualsense-battery-indicators\prefs.json` (notification toggles/threshold/position + lightbar spectrum + analytics opt-in)
-- Remembered controllers: `%APPDATA%\dualsense-battery-indicators\controllers.json` (remembered pads + nicknames)
-- Battery analytics (when enabled): `%APPDATA%\dualsense-battery-indicators\analytics.json` (per-pad step samples + in-progress timer)
-- Autostart writes `dualsense-battery-indicators.lnk` into the user Startup folder (also toggleable in **Configure**). Older `.cmd` entries are migrated automatically.
+- Log file: `%APPDATA%\sdsc-utils\app.log`
+- Prefs file: `%APPDATA%\sdsc-utils\prefs.json` (notification toggles/threshold/position + lightbar spectrum + analytics opt-in)
+- Remembered controllers: `%APPDATA%\sdsc-utils\controllers.json` (remembered pads + nicknames)
+- Battery analytics (when enabled): `%APPDATA%\sdsc-utils\analytics.json` (per-pad step samples + in-progress timer)
+- Autostart: portable builds write `sdsc-utils.lnk` into the user Startup folder; Microsoft Store / MSIX builds use a packaged Startup Task (both toggleable in **Configure**). Older portable `.cmd` entries are migrated to `.lnk` automatically.
 - Overlay toasts work over desktop, windowed, and borderless-fullscreen content. Exclusive fullscreen and some protected games can remain above all desktop windows.
 - The left-click controller popup is available on Windows and macOS. The `tray-icon` Linux backend does not emit tray click events; use the right-click **Settings** menu there.
+- MSIX packaging for Store submission: see [`packaging/README.md`](packaging/README.md).
 
 ## Platform support
 
@@ -118,8 +130,8 @@ DualSense firmware reports battery in **11 coarse steps** (0–10). Percentages 
 ## Troubleshooting
 
 - **Log file**
-  - Windows: `%APPDATA%\dualsense-battery-indicators\app.log`
-  - Unix: `$XDG_STATE_HOME/dualsense-battery-indicators/app.log` or `~/.local/state/dualsense-battery-indicators/app.log`
+  - Windows: `%APPDATA%\sdsc-utils\app.log`
+  - Unix: `$XDG_STATE_HOME/sdsc-utils/app.log` or `~/.local/state/sdsc-utils/app.log`
 - **Second launch does nothing** — only one instance is allowed; the second process exits after logging.
 - **Exe icon looks stale in Explorer** — rebuild release, then refresh the folder or restart Explorer (Windows caches icons).
 - **Controller not listed** — wait a few seconds after power-on (presence is scanned every 3s); check the log if open/read fails.
@@ -131,14 +143,14 @@ DualSense firmware reports battery in **11 coarse steps** (0–10). Percentages 
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
-CI builds on Windows. To publish a binary:
+CI builds on Windows. To publish a binary + MSIX artifact:
 
 ```bash
 git tag v1.2.1
 git push origin v1.2.1
 ```
 
-The release workflow attaches `dualsense-battery-indicators.exe` to the GitHub Release for that tag. You can also run the **Release** workflow manually (`workflow_dispatch`).
+The release workflow attaches `sdsc-utils.exe` and `sdsc-utils.msix` to the GitHub Release for that tag. Upload the MSIX to Partner Center for Store distribution. You can also run the **Release** workflow manually (`workflow_dispatch`).
 
 ## Privacy policy
 

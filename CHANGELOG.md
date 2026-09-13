@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-13
+
 ### Changed
 
 - Controller popup and Settings are ephemeral again (create/destroy on each open). The overlay toast window is pre-created hidden at boot and kept as a GPU compositor sentinel so reopen stays fast without holding full UI surfaces idle.
+
+### Fixed
+
+- Settings no longer flashes white on close on Windows (DWM undecorated shadow removed; hide before destroy).
+- Controllers popup no longer briefly shows an empty dark frame on dismiss (hide before destroy).
 
 ## [1.2.0] - 2026-09-13
 
@@ -209,6 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Embedded DualSense silhouette for the tray and `.exe` icon.
 - Windows CI and tagged release workflow.
 
+[1.2.1]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/LankyMoose/dualsense-battery-indicators/compare/v1.0.0...v1.0.1

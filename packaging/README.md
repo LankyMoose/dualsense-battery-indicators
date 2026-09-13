@@ -1,10 +1,13 @@
 # Packaging notes (SDSC Utils)
 
-## Sideload vs Store
+## Store identity
 
-- [`AppxManifest.xml`](AppxManifest.xml) uses a dummy `Publisher="CN=SDSCUtils-Sideload"`.
-- After you associate the app with Partner Center, Visual Studio / the Store packaging tools rewrite **Identity Name** and **Publisher** to the Store-assigned values. Do not invent a production CN here.
-- `pack-msix.ps1` stamps `Identity Version` from `Cargo.toml` (`1.3.0` → `1.3.0.0`) so each tagged upload is a newer package for Store auto-update.
+- [`AppxManifest.xml`](AppxManifest.xml) uses the Partner Center package identity:
+  - **Name:** `LankyMoose.SDSCUtils`
+  - **Publisher:** `CN=F2379117-7506-444F-AA08-EC697BF7DE9D`
+  - **Family name** (derived): `LankyMoose.SDSCUtils_9wejh0h2znyz4`
+- `pack-msix.ps1` stamps `Identity Version` from `Cargo.toml` (`1.3.1` → `1.3.1.0`) so each tagged upload is a newer package for Store auto-update.
+- Microsoft re-signs the package on Store publish. Local sideload install requires a certificate whose subject matches `Publisher`.
 
 ## Local pack
 

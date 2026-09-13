@@ -24,7 +24,7 @@ When asked about `runFullTrust`: tray icon + raw DualSense HID (`hidapi`) for ba
 ## First upload
 
 1. Download `sdsc-utils.msix` from the Release workflow artifact (or pack locally — see [README.md](README.md)).
-2. Associate the package with the reserved name in Partner Center (identity/publisher rewrite).
+2. Confirm the package identity matches Partner Center (`LankyMoose.SDSCUtils` / publisher CN in [`AppxManifest.xml`](AppxManifest.xml)).
 3. Submit for certification.
 
 Do **not** expand SDSC as “Sony DualSense Controller Utilities” anywhere in the listing.

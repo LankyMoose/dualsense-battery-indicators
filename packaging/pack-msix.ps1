@@ -3,8 +3,8 @@
 # Usage:
 #   ./packaging/pack-msix.ps1 -ExePath target/release/sdsc-utils.exe -OutDir target/msix
 #
-# Identity Version is stamped from Cargo.toml (e.g. 1.2.1 -> 1.2.1.0).
-# Publisher CN here is for local sideload only; Partner Center replaces it on Store association.
+# Identity Version is stamped from Cargo.toml (e.g. 1.3.1 -> 1.3.1.0).
+# Identity Name / Publisher in AppxManifest.xml must match Partner Center.
 
 [CmdletBinding()]
 param(

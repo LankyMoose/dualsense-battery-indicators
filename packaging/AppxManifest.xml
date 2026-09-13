@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Sideload / CI template. Partner Center overwrites Identity Name / Publisher
-  when the package is associated with a Store listing. Do not invent a production CN.
+  Store / CI package identity. Name and Publisher must match Partner Center
+  (Package/Identity). Microsoft re-signs on Store publish; local sideload still
+  needs a cert whose subject matches Publisher if you install outside the Store.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -11,8 +12,8 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap uap10 desktop rescap">
   <Identity
-    Name="SDSCUtils"
-    Publisher="CN=SDSCUtils-Sideload"
+    Name="LankyMoose.SDSCUtils"
+    Publisher="CN=F2379117-7506-444F-AA08-EC697BF7DE9D"
     Version="0.0.0.0"
     ProcessorArchitecture="x64" />
   <Properties>
